@@ -4,6 +4,15 @@ locals {
   runner_subnet      = cidrsubnet(var.address_space, 2, 0) # /26
   pe_subnet          = cidrsubnet(var.address_space, 3, 2) # /27
   tags               = { purpose = "github-actions-runner" }
+
+  # One VM per consuming repository. "foundation" keeps the original resource names.
+  runners = {
+    for k in var.runners : k => {
+      vm  = k == "foundation" ? "${var.name_prefix}-runner-01" : "${var.name_prefix}-${k}-runner-01"
+      nic = k == "foundation" ? "${var.name_prefix}-runner-nic" : "${var.name_prefix}-${k}-runner-nic"
+      key = k == "foundation" ? "${var.name_prefix}-runner-key" : "${var.name_prefix}-${k}-runner-key"
+    }
+  }
 }
 
 # ---- Network ------------------------------------------------------------------
@@ -14,8 +23,25 @@ resource "azapi_resource" "nsg" {
   parent_id = local.rg_id
   location  = var.location
   tags      = local.tags
-  # No inbound rules: the default rules deny inbound from the internet.
-  body = { properties = { securityRules = [] } }
+  # Inbound from the internet is denied by default. Also deny inbound from other VNet hosts so a
+  # compromised job on one runner VM cannot reach another. Runners only make outbound connections.
+  body = {
+    properties = {
+      securityRules = [{
+        name = "deny-vnet-inbound"
+        properties = {
+          priority                 = 4000
+          direction                = "Inbound"
+          access                   = "Deny"
+          protocol                 = "*"
+          sourceAddressPrefix      = "VirtualNetwork"
+          sourcePortRange          = "*"
+          destinationAddressPrefix = "*"
+          destinationPortRange     = "*"
+        }
+      }]
+    }
+  }
 }
 
 resource "azapi_resource" "vnet" {
@@ -118,13 +144,32 @@ resource "azapi_resource" "state_pe_dns" {
   }
 }
 
-# ---- Runner VM ----------------------------------------------------------------------
+# ---- Runner VMs ----------------------------------------------------------------------
+
+moved {
+  from = azapi_resource.ssh_key
+  to   = azapi_resource.ssh_key["foundation"]
+}
+moved {
+  from = azapi_resource_action.ssh_keygen
+  to   = azapi_resource_action.ssh_keygen["foundation"]
+}
+moved {
+  from = azapi_resource.nic
+  to   = azapi_resource.nic["foundation"]
+}
+moved {
+  from = azapi_resource.vm
+  to   = azapi_resource.vm["foundation"]
+}
 
 # Azure generates the key pair; only the public key is kept. Access is via
 # `az vm run-command`, not SSH (no inbound rules, no public IP).
 resource "azapi_resource" "ssh_key" {
+  for_each = local.runners
+
   type      = "Microsoft.Compute/sshPublicKeys@2024-07-01"
-  name      = "${var.name_prefix}-runner-key"
+  name      = each.value.key
   parent_id = local.rg_id
   location  = var.location
   tags      = local.tags
@@ -136,16 +181,20 @@ resource "azapi_resource" "ssh_key" {
 }
 
 resource "azapi_resource_action" "ssh_keygen" {
+  for_each = local.runners
+
   type                   = "Microsoft.Compute/sshPublicKeys@2024-07-01"
-  resource_id            = azapi_resource.ssh_key.id
+  resource_id            = azapi_resource.ssh_key[each.key].id
   action                 = "generateKeyPair"
   method                 = "POST"
   response_export_values = ["publicKey"]
 }
 
 resource "azapi_resource" "nic" {
+  for_each = local.runners
+
   type      = "Microsoft.Network/networkInterfaces@2024-05-01"
-  name      = "${var.name_prefix}-runner-nic"
+  name      = each.value.nic
   parent_id = local.rg_id
   location  = var.location
   tags      = local.tags
@@ -163,8 +212,10 @@ resource "azapi_resource" "nic" {
 }
 
 resource "azapi_resource" "vm" {
+  for_each = local.runners
+
   type      = "Microsoft.Compute/virtualMachines@2024-07-01"
-  name      = "${var.name_prefix}-runner-01"
+  name      = each.value.vm
   parent_id = local.rg_id
   location  = var.location
   tags      = local.tags
@@ -185,7 +236,7 @@ resource "azapi_resource" "vm" {
         }
       }
       osProfile = {
-        computerName  = "${var.name_prefix}-runner-01"
+        computerName  = each.value.vm
         adminUsername = var.admin_username
         customData    = base64encode(file("${path.module}/cloud-init.yaml"))
         linuxConfiguration = {
@@ -193,14 +244,14 @@ resource "azapi_resource" "vm" {
           ssh = {
             publicKeys = [{
               path    = "/home/${var.admin_username}/.ssh/authorized_keys"
-              keyData = azapi_resource_action.ssh_keygen.output.publicKey
+              keyData = azapi_resource_action.ssh_keygen[each.key].output.publicKey
             }]
           }
         }
       }
       networkProfile = {
         networkInterfaces = [{
-          id         = azapi_resource.nic.id
+          id         = azapi_resource.nic[each.key].id
           properties = { deleteOption = "Delete", primary = true }
         }]
       }
@@ -208,9 +259,13 @@ resource "azapi_resource" "vm" {
     }
   }
 
-  # customData and the generated key are create-time only.
+  # customData, the generated key and the OS disk SKU are create-time only (the original VM's disk is
+  # Standard_LRS; changing it needs a deallocate).
   lifecycle {
-    ignore_changes  = [body.properties.osProfile]
+    ignore_changes = [
+      body.properties.osProfile,
+      body.properties.storageProfile.osDisk.managedDisk,
+    ]
     prevent_destroy = true
   }
 

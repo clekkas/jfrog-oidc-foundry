@@ -1,9 +1,14 @@
 output "vm_name" {
-  value = azapi_resource.vm.name
+  description = "Foundation runner VM."
+  value       = azapi_resource.vm["foundation"].name
+}
+
+output "runner_vm_names" {
+  value = { for k, vm in azapi_resource.vm : k => vm.name }
 }
 
 output "vm_id" {
-  value = azapi_resource.vm.id
+  value = azapi_resource.vm["foundation"].id
 }
 
 output "state_private_endpoint_id" {

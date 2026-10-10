@@ -18,6 +18,8 @@ param(
     # Environment whose tfvars/backend files locate the subscription and state account.
     [Parameter(Mandatory)][string]$EnvName,
     [string]$RunnerLabel = 'byor-private',
+    # Which VM of infra/ci-runner registers to -Repo: 'foundation' (this repo) or 'agent' (the agent repo).
+    [ValidateSet('foundation', 'agent')][string]$RunnerKey = 'foundation',
     [string]$VmSize = 'Standard_B2s_v2',
     # Defaults to the state resource group's region. The private endpoint can reach the state account across regions.
     [string]$Location,
@@ -36,7 +38,11 @@ if (-not $cfg.StateStorageAccount) { throw "No storage_account_name in $($cfg.Ba
 $resourceGroup = if ($cfg.StateResourceGroup) { $cfg.StateResourceGroup } else { $cfg.ResourceGroup }
 Invoke-Az account set --subscription $cfg.SubscriptionId
 
-if (-not $Location) { $Location = Invoke-Az group show -n $resourceGroup --query location -o tsv }
+# The runner network may be in a different region than the resource group: reuse wherever it already is.
+if (-not $Location) {
+    $Location = Invoke-Az resource list -g $resourceGroup --resource-type Microsoft.Network/virtualNetworks --query "[?tags.purpose=='github-actions-runner'].location | [0]" -o tsv
+    if (-not $Location) { $Location = Invoke-Az group show -n $resourceGroup --query location -o tsv }
+}
 $location = $Location.Trim()
 
 # infra/ci-runner keeps LOCAL state, and that file is the only record of the runner resources.
@@ -73,7 +79,8 @@ Copy-Item $stateFile $backup
 Write-Host "==> State backed up to $backup"
 Write-Warning 'That file is sensitive and is the only record of the runner. Also keep a copy in a secure location (password manager vault or encrypted backup).'
 
-$vmName = (& terraform "-chdir=$tfDir" output -raw vm_name)
+$vmName = ((& terraform "-chdir=$tfDir" output -json runner_vm_names) | ConvertFrom-Json).$RunnerKey
+if (-not $vmName) { throw "No runner VM '$RunnerKey' in infra/ci-runner outputs." }
 
 $runnerName = $vmName
 $existing = & gh api "repos/$Repo/actions/runners" --jq ".runners[] | select(.name==`"$runnerName`") | .status"

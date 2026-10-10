@@ -40,3 +40,9 @@ variable "admin_username" {
   type    = string
   default = "azureuser"
 }
+
+variable "runners" {
+  description = "One runner VM per consuming repository. \"foundation\" keeps the original resource names."
+  type        = set(string)
+  default     = ["foundation", "agent"]
+}
