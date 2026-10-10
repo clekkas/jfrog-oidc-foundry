@@ -1,0 +1,97 @@
+name: foundation-plan
+
+# Read-only Terraform plan for every environment that has an environments/<env>.tfvars.
+# Runs with the per-environment *plan* identity (Reader + state read), never the apply identity.
+# Requires a private/internal repository: the job runs on the self-hosted runner.
+
+on:
+  pull_request:
+    paths:
+      - "infra/registry-connection/**"
+      - "scripts/build-contract.sh"
+      - ".github/actions/foundation-init/**"
+      - ".github/workflows/foundation-*.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: foundation-plan-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  discover:
+    # Never run fork PR code on the self-hosted runner. (Plan jobs depend on this one.)
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, linux, "${{ vars.RUNNER_LABEL || 'byor-private' }}"]
+    outputs:
+      environments: ${{ steps.find.outputs.environments }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: find
+        shell: bash
+        run: |
+          envs=$(cd infra/registry-connection/environments && ls -1 *.tfvars | sed 's/\.tfvars$//' | jq -R . | jq -sc .)
+          echo "environments=$envs" >> "$GITHUB_OUTPUT"
+
+  plan:
+    needs: discover
+    runs-on: [self-hosted, linux, "${{ vars.RUNNER_LABEL || 'byor-private' }}"]
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: ${{ fromJSON(needs.discover.outputs.environments) }}
+    # Unprotected environment holding the read-only identity for this foundation environment.
+    environment: foundation-${{ matrix.environment }}-plan
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      ENVIRONMENT: ${{ matrix.environment }}
+      ARM_USE_OIDC: "true"
+      ARM_USE_CLI: "false"
+      ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      TF_IN_AUTOMATION: "true"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/foundation-init
+        with:
+          environment: ${{ matrix.environment }}
+          terraform-version: ${{ vars.TERRAFORM_VERSION || '1.9.8' }}
+
+      - name: terraform fmt
+        shell: bash
+        run: terraform fmt -check -recursive -diff infra
+
+      - name: terraform validate
+        shell: bash
+        working-directory: infra/registry-connection
+        run: terraform validate
+
+      # -lock=false: the plan identity can only read state, and a plan never writes it.
+      - name: terraform plan
+        shell: bash
+        working-directory: infra/registry-connection
+        run: |
+          set +e
+          terraform plan -input=false -lock=false -no-color -detailed-exitcode \
+            -var-file="environments/${ENVIRONMENT}.tfvars" > plan.txt 2>&1
+          code=$?
+          set -e
+          cat plan.txt
+          {
+            echo "### Foundation plan: \`${ENVIRONMENT}\`"
+            case $code in
+              0) echo "No changes." ;;
+              2) echo "Changes pending (applied by the foundation-apply workflow after approval)." ;;
+              *) echo "Plan failed." ;;
+            esac
+            echo '```'
+            head -c 60000 plan.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$code" -eq 1 ]; then exit 1; fi

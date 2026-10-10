@@ -1,0 +1,124 @@
+name: foundation-drift
+
+# Scheduled drift detection: plans every environment against live Azure and reports
+# out-of-band changes (e.g. someone edited the registry connection in the portal) as an issue.
+# Read-only: uses the per-environment plan identity.
+
+on:
+  schedule:
+    - cron: "23 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: foundation-drift
+  cancel-in-progress: false
+
+jobs:
+  discover:
+    runs-on: [self-hosted, linux, "${{ vars.RUNNER_LABEL || 'byor-private' }}"]
+    outputs:
+      environments: ${{ steps.find.outputs.environments }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: find
+        shell: bash
+        run: |
+          envs=$(cd infra/registry-connection/environments && ls -1 *.tfvars | sed 's/\.tfvars$//' | jq -R . | jq -sc .)
+          echo "environments=$envs" >> "$GITHUB_OUTPUT"
+
+  drift:
+    needs: discover
+    runs-on: [self-hosted, linux, "${{ vars.RUNNER_LABEL || 'byor-private' }}"]
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: ${{ fromJSON(needs.discover.outputs.environments) }}
+    environment: foundation-${{ matrix.environment }}-plan
+    permissions:
+      contents: read
+      id-token: write
+      issues: write
+    env:
+      ENVIRONMENT: ${{ matrix.environment }}
+      ARM_USE_OIDC: "true"
+      ARM_USE_CLI: "false"
+      ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      TF_IN_AUTOMATION: "true"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/foundation-init
+        with:
+          environment: ${{ matrix.environment }}
+          terraform-version: ${{ vars.TERRAFORM_VERSION || '1.9.8' }}
+
+      - name: terraform plan (drift check)
+        id: plan
+        shell: bash
+        working-directory: infra/registry-connection
+        run: |
+          set +e
+          terraform plan -input=false -lock=false -no-color -detailed-exitcode \
+            -var-file="environments/${ENVIRONMENT}.tfvars" > plan.txt 2>&1
+          code=$?
+          set -e
+          cat plan.txt
+          echo "exitcode=$code" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Drift check: \`${ENVIRONMENT}\`"
+            case $code in
+              0) echo "No drift." ;;
+              2) echo "**Drift or unapplied changes detected.**" ;;
+              *) echo "Plan failed." ;;
+            esac
+            echo '```'
+            head -c 60000 plan.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$code" -eq 1 ]; then exit 1; fi
+
+      - name: Open, update or close drift issue
+        uses: actions/github-script@v7
+        env:
+          PLAN_EXIT: ${{ steps.plan.outputs.exitcode }}
+          PLAN_FILE: infra/registry-connection/plan.txt
+        with:
+          script: |
+            const fs = require('fs');
+            const { owner, repo } = context.repo;
+            const environment = process.env.ENVIRONMENT;
+            const title = `Foundation drift detected: ${environment}`;
+            const label = 'foundation-drift';
+            const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
+
+            const open = await github.paginate(github.rest.issues.listForRepo, {
+              owner, repo, state: 'open', labels: label, per_page: 100,
+            });
+            const existing = open.find(i => i.title === title);
+
+            if (process.env.PLAN_EXIT === '2') {
+              const plan = fs.readFileSync(process.env.PLAN_FILE, 'utf8').slice(0, 50000);
+              const body = `Terraform plan for \`${environment}\` is not empty. Live Azure differs from \`main\`.\n\n` +
+                `Run: ${runUrl}\n\n<details><summary>Plan</summary>\n\n\`\`\`\n${plan}\n\`\`\`\n\n</details>\n\n` +
+                `Either revert the out-of-band change or update \`infra/registry-connection\` via PR.`;
+              if (existing) {
+                await github.rest.issues.createComment({ owner, repo, issue_number: existing.number, body });
+              } else {
+                await github.rest.issues.create({ owner, repo, title, body, labels: [label] });
+              }
+            } else if (process.env.PLAN_EXIT === '0' && existing) {
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: existing.number, body: `Drift cleared. Run: ${runUrl}`,
+              });
+              await github.rest.issues.update({ owner, repo, issue_number: existing.number, state: 'closed' });
+            }
+
+      - name: Fail on drift
+        if: steps.plan.outputs.exitcode == '2'
+        shell: bash
+        run: echo "::error::Drift detected in ${ENVIRONMENT}"; exit 1

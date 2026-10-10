@@ -69,6 +69,22 @@ variable "extra_body_fields" {
   default     = {}
 }
 
+variable "jfrog_github_oidc_provider_name" {
+  description = "JFrog OIDC integration (GitHub provider) that app repos use to push images. Published in the platform contract only; not managed by this stack."
+  type        = string
+  default     = "github-oidc"
+}
+
+variable "jfrog_repository_key" {
+  description = "JFrog Docker repository key that app repos use in image paths. Published as JFROG_REPO in the platform contract only; not managed by this stack."
+  type        = string
+
+  validation {
+    condition     = length(trimspace(var.jfrog_repository_key)) > 0 && !can(regex("[/\\s]", var.jfrog_repository_key))
+    error_message = "jfrog_repository_key must be a non-empty repository key (no slashes or whitespace), e.g. \"byor-demo-docker\"."
+  }
+}
+
 variable "import_existing_connection" {
   description = "Adopt the legacy connection that existed before Terraform ownership. No-op once it is in state."
   type        = bool

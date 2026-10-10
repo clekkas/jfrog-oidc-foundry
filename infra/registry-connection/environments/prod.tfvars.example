@@ -1,0 +1,20 @@
+# Copy to prod.tfvars (and prod.backend.hcl.example to prod.backend.hcl) and fill in.
+# The workflows only pick up environments that have a *.tfvars file.
+
+subscription_id      = "<subscription-id>"
+tenant_id            = "<tenant-id>"
+resource_group_name  = "<resource-group>"
+foundry_account_name = "<foundry-account-name>"
+foundry_project_name = "<foundry-project-name>"
+
+connection_name    = "jfrog-registry"
+registry_target    = "https://<your-instance>.jfrog.io"
+token_audience     = "<entra-app-client-id>"
+token_endpoint     = "/access/api/v1/oidc/token"
+oidc_provider_name = "<jfrog-entra-oidc-provider-name>"
+
+jfrog_github_oidc_provider_name = "github-oidc"
+jfrog_repository_key            = "<repository-key>"
+
+# Set to true once if the connection already exists outside Terraform.
+import_existing_connection = false

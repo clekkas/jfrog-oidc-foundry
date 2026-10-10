@@ -1,0 +1,23 @@
+# Terraform
+# WARNING: infra/ci-runner/terraform.tfstate is the ONLY record of the runner VM/network (local
+# state, untracked on purpose: it holds sensitive values). `git clean -x` / `-fdx`, deleting the
+# folder or re-cloning destroys it. Use `git clean -n` first. See README: "infra/ci-runner local state".
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+tfplan
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Real environment inputs are committed; local scratch copies are not.
+*.auto.tfvars.local
+backend.hcl
+terraform.tfvars
+
+# Local contract builds
+contract-out/

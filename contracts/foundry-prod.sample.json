@@ -1,0 +1,29 @@
+{
+  "contractVersion": "1",
+  "environment": "prod",
+  "generatedAt": "2026-01-01T00:00:00Z",
+  "source": {
+    "repository": "contoso/foundry-platform",
+    "commit": "0000000000000000000000000000000000000000",
+    "workflowRun": "https://github.com/contoso/foundry-platform/actions/runs/1234567890"
+  },
+  "valuesSha256": "ac9aae1bf68b28304db681e69f6fc1d2190beadfb5e95974266afb6eecb9a903",
+  "values": {
+    "AZURE_TENANT_ID": "22222222-2222-2222-2222-222222222222",
+    "AZURE_SUBSCRIPTION_ID": "55555555-5555-5555-5555-555555555555",
+    "AZURE_RESOURCE_GROUP": "contoso-foundry-prod-rg",
+    "FOUNDRY_ACCOUNT_NAME": "contoso-foundry-prod",
+    "FOUNDRY_PROJECT_NAME": "contoso-agents-prod",
+    "FOUNDRY_PROJECT_RESOURCE_ID": "/subscriptions/55555555-5555-5555-5555-555555555555/resourceGroups/contoso-foundry-prod-rg/providers/Microsoft.CognitiveServices/accounts/contoso-foundry-prod/projects/contoso-agents-prod",
+    "FOUNDRY_PROJECT_ENDPOINT": "https://contoso-foundry-prod.services.ai.azure.com/api/projects/contoso-agents-prod",
+    "FOUNDRY_PROJECT_PRINCIPAL_ID": "66666666-6666-6666-6666-666666666666",
+    "JFROG_REGISTRY_CONNECTION_NAME": "jfrog-registry",
+    "JFROG_REGISTRY_CONNECTION_ID": "/subscriptions/55555555-5555-5555-5555-555555555555/resourceGroups/contoso-foundry-prod-rg/providers/Microsoft.CognitiveServices/accounts/contoso-foundry-prod/projects/contoso-agents-prod/connections/jfrog-registry",
+    "JF_URL": "https://contoso.jfrog.io",
+    "JFROG_REPO": "agents-docker-prod",
+    "JFROG_GITHUB_OIDC_PROVIDER": "github-oidc",
+    "REGISTRY_TOKEN_AUDIENCE": "77777777-7777-7777-7777-777777777777",
+    "REGISTRY_TOKEN_ENDPOINT": "/access/api/v1/oidc/token",
+    "REGISTRY_OIDC_PROVIDER_NAME": "oidc-byor"
+  }
+}

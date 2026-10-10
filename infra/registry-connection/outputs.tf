@@ -27,3 +27,27 @@ output "project_principal_id" {
   description = "Project managed identity object ID. Bind this in the registry's OIDC identity mapping."
   value       = data.azapi_resource.project.output.identity.principalId
 }
+
+# Source of truth for the platform contract. scripts/build-contract.sh maps this
+# object to the GitHub Environment variables that app repos consume.
+output "platform_contract" {
+  description = "Values app repos are approved to consume. Contains no secrets."
+  value = {
+    tenant_id                       = var.tenant_id
+    subscription_id                 = var.subscription_id
+    resource_group_name             = var.resource_group_name
+    foundry_account_name            = var.foundry_account_name
+    foundry_project_name            = var.foundry_project_name
+    foundry_project_resource_id     = data.azapi_resource.project.id
+    foundry_project_endpoint        = "https://${var.foundry_account_name}.services.ai.azure.com/api/projects/${var.foundry_project_name}"
+    foundry_project_principal_id    = data.azapi_resource.project.output.identity.principalId
+    registry_connection_name        = azapi_resource.jfrog_registry.name
+    registry_connection_resource_id = azapi_resource.jfrog_registry.id
+    registry_target                 = azapi_resource.jfrog_registry.output.properties.target
+    registry_token_audience         = var.token_audience
+    registry_token_endpoint         = var.token_endpoint
+    registry_oidc_provider_name     = var.oidc_provider_name
+    jfrog_github_oidc_provider_name = var.jfrog_github_oidc_provider_name
+    jfrog_repository_key            = var.jfrog_repository_key
+  }
+}

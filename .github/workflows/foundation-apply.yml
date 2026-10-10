@@ -1,0 +1,164 @@
+name: foundation-apply
+
+# Protected apply of the foundation infrastructure, then publication of the platform contract.
+#   push to main      -> dev
+#   workflow_dispatch -> dev or prod (main only)
+# Only this workflow can use the apply identity: its federated credential is bound to the
+# foundation-<env> GitHub Environment, which carries the required reviewers.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "infra/registry-connection/**"
+      - "scripts/build-contract.sh"
+      - ".github/actions/foundation-init/**"
+      - ".github/workflows/foundation-apply.yml"
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Foundation environment to apply
+        type: choice
+        options: [dev, prod]
+        default: dev
+
+permissions:
+  contents: read
+
+concurrency:
+  group: foundation-apply-${{ inputs.environment || 'dev' }}
+  cancel-in-progress: false
+
+jobs:
+  # Read-only plan, saved so exactly this plan is what gets approved and applied.
+  plan:
+    runs-on: [self-hosted, linux, "${{ vars.RUNNER_LABEL || 'byor-private' }}"]
+    environment: foundation-${{ inputs.environment || 'dev' }}-plan
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      has_changes: ${{ steps.plan.outputs.has_changes }}
+    env:
+      ENVIRONMENT: ${{ inputs.environment || 'dev' }}
+      ARM_USE_OIDC: "true"
+      ARM_USE_CLI: "false"
+      ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      TF_IN_AUTOMATION: "true"
+    steps:
+      - name: Require main
+        if: github.ref != 'refs/heads/main'
+        shell: bash
+        run: echo "::error::Foundation apply only runs from main (got ${{ github.ref }})."; exit 1
+
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/foundation-init
+        with:
+          environment: ${{ env.ENVIRONMENT }}
+          terraform-version: ${{ vars.TERRAFORM_VERSION || '1.9.8' }}
+
+      - name: terraform plan
+        id: plan
+        shell: bash
+        working-directory: infra/registry-connection
+        run: |
+          set +e
+          terraform plan -input=false -lock=false -no-color -detailed-exitcode \
+            -var-file="environments/${ENVIRONMENT}.tfvars" -out=tfplan > plan.txt 2>&1
+          code=$?
+          set -e
+          cat plan.txt
+          {
+            echo "### Foundation plan: \`${ENVIRONMENT}\`"
+            echo '```'
+            head -c 60000 plan.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$code" -eq 1 ]; then exit 1; fi
+          echo "has_changes=$([ "$code" -eq 2 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload plan
+        if: steps.plan.outputs.has_changes == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: foundation-tfplan-${{ env.ENVIRONMENT }}
+          path: infra/registry-connection/tfplan
+          retention-days: 3
+
+  # Waits for approval from the foundation-<env> environment's required reviewers.
+  apply:
+    needs: plan
+    if: needs.plan.outputs.has_changes == 'true'
+    runs-on: [self-hosted, linux, "${{ vars.RUNNER_LABEL || 'byor-private' }}"]
+    environment: foundation-${{ inputs.environment || 'dev' }}
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      ENVIRONMENT: ${{ inputs.environment || 'dev' }}
+      ARM_USE_OIDC: "true"
+      ARM_USE_CLI: "false"
+      ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      TF_IN_AUTOMATION: "true"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/foundation-init
+        with:
+          environment: ${{ env.ENVIRONMENT }}
+          terraform-version: ${{ vars.TERRAFORM_VERSION || '1.9.8' }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: foundation-tfplan-${{ env.ENVIRONMENT }}
+          path: infra/registry-connection
+
+      # Fails as "stale" if state changed since the plan; re-run the workflow in that case.
+      - name: terraform apply
+        shell: bash
+        working-directory: infra/registry-connection
+        run: terraform apply -input=false -lock-timeout=5m tfplan
+
+  # Publishes the effective contract after every successful run, including no-change runs.
+  contract:
+    needs: [plan, apply]
+    if: ${{ !cancelled() && needs.plan.result == 'success' && contains(fromJSON('["success","skipped"]'), needs.apply.result) }}
+    runs-on: [self-hosted, linux, "${{ vars.RUNNER_LABEL || 'byor-private' }}"]
+    environment: foundation-${{ inputs.environment || 'dev' }}-plan
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      ENVIRONMENT: ${{ inputs.environment || 'dev' }}
+      ARM_USE_OIDC: "true"
+      ARM_USE_CLI: "false"
+      ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      TF_IN_AUTOMATION: "true"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/foundation-init
+        with:
+          environment: ${{ env.ENVIRONMENT }}
+          terraform-version: ${{ vars.TERRAFORM_VERSION || '1.9.8' }}
+
+      - name: Build platform contract
+        shell: bash
+        run: |
+          terraform -chdir=infra/registry-connection output -json platform_contract \
+            | bash scripts/build-contract.sh "$ENVIRONMENT" contract-out
+
+      - name: Upload platform contract
+        uses: actions/upload-artifact@v4
+        with:
+          name: platform-contract-${{ env.ENVIRONMENT }}
+          path: contract-out/foundry-${{ env.ENVIRONMENT }}.json
+          if-no-files-found: error
+          retention-days: 90

@@ -1,0 +1,30 @@
+name: Foundation Terraform init
+description: Install Terraform and initialise infra/registry-connection against an environment's remote state using GitHub OIDC (no stored secrets).
+
+inputs:
+  environment:
+    description: Foundation environment name (dev, prod, ...). Selects environments/<env>.backend.hcl.
+    required: true
+  terraform-version:
+    description: Terraform CLI version.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: ${{ inputs.terraform-version }}
+        terraform_wrapper: false
+
+    # ARM_* auth variables are set by the calling job (ARM_USE_OIDC, ARM_CLIENT_ID, ...).
+    - name: terraform init
+      shell: bash
+      working-directory: infra/registry-connection
+      env:
+        ENVIRONMENT: ${{ inputs.environment }}
+      run: |
+        test -f "environments/${ENVIRONMENT}.tfvars" || { echo "::error::environments/${ENVIRONMENT}.tfvars not found"; exit 1; }
+        terraform init -input=false \
+          -backend-config="environments/${ENVIRONMENT}.backend.hcl" \
+          -backend-config="use_oidc=true"

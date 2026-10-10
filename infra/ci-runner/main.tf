@@ -50,6 +50,10 @@ resource "azapi_resource" "vnet" {
       ]
     }
   }
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 # ---- Private endpoint to Terraform state storage --------------------------------
@@ -93,6 +97,10 @@ resource "azapi_resource" "state_pe" {
         }
       }]
     }
+  }
+
+  lifecycle {
+    prevent_destroy = true
   }
 }
 
@@ -202,7 +210,8 @@ resource "azapi_resource" "vm" {
 
   # customData and the generated key are create-time only.
   lifecycle {
-    ignore_changes = [body.properties.osProfile]
+    ignore_changes  = [body.properties.osProfile]
+    prevent_destroy = true
   }
 
   depends_on = [azapi_resource.state_pe_dns, azapi_resource.blob_dns_link]

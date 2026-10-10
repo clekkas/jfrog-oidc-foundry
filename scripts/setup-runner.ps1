@@ -1,57 +1,61 @@
 <#
 .SYNOPSIS
   Provision the self-hosted GitHub Actions runner (infra/ci-runner, AzAPI) and register
-  it with the repository. Re-runnable.
+  it with the platform repository. Re-runnable.
 
-  The runner lives in a VNet with a private endpoint to the Terraform state account and
-  outbound-only internet via NAT. No inbound access; management is via az vm run-command.
+  The state storage account has public network access disabled, so every foundation workflow
+  runs on this runner. It lives in a VNet with a private endpoint to the state account and
+  outbound-only internet. No inbound access; management is via az vm run-command.
+
+  infra/ci-runner is a bootstrap layer with LOCAL state (git-ignored). Keep that state safe.
 
 .EXAMPLE
-  ./scripts/setup-runner.ps1
+  ./scripts/setup-runner.ps1 -Repo contoso/foundry-platform -EnvName dev
 #>
 [CmdletBinding()]
 param(
-    [string]$Repo = 'clekkas/byor-agent',
+    [Parameter(Mandatory)][string]$Repo,
+    # Environment whose tfvars/backend files locate the subscription and state account.
+    [Parameter(Mandatory)][string]$EnvName,
     [string]$RunnerLabel = 'byor-private',
     [string]$VmSize = 'Standard_B2s_v2',
-    # Runner region. Defaults to the RUNNER_LOCATION repo variable, then AZURE_LOCATION.
-    # The private endpoint can reach the state account across regions.
+    # Defaults to the state resource group's region. The private endpoint can reach the state account across regions.
     [string]$Location,
-    [switch]$AutoApprove
+    [switch]$AutoApprove,
+    # Only if you are certain the runner resources do not exist yet (see the state guard below).
+    [switch]$AcceptEmptyState
 )
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 $tfDir = Join-Path $root 'infra\ci-runner'
+. "$PSScriptRoot\_common.ps1"
 
-function Invoke-Checked {
-    param([string]$Exe, [string[]]$Arguments)
-    & $Exe @Arguments
-    if ($LASTEXITCODE -ne 0) { throw "$Exe $($Arguments -join ' ') failed with exit code $LASTEXITCODE" }
-}
+$cfg = Get-FoundationConfig -Root $root -EnvName $EnvName
+if (-not $cfg.StateStorageAccount) { throw "No storage_account_name in $($cfg.BackendPath). Run scripts/bootstrap-github-oidc.ps1 first." }
+$resourceGroup = if ($cfg.StateResourceGroup) { $cfg.StateResourceGroup } else { $cfg.ResourceGroup }
+Invoke-Az account set --subscription $cfg.SubscriptionId
 
-function Get-RepoVar([string]$Name) {
-    $v = & gh variable get $Name --repo $Repo 2>$null
-    if ($LASTEXITCODE -ne 0 -or -not $v) { throw "GitHub variable $Name not set. Run scripts/bootstrap-github-oidc.ps1 first." }
-    $v.Trim()
-}
-
-$subscriptionId = Get-RepoVar AZURE_SUBSCRIPTION_ID
-$tenantId = Get-RepoVar AZURE_TENANT_ID
-$resourceGroup = Get-RepoVar AZURE_RESOURCE_GROUP
-if (-not $Location) {
-    $Location = (& gh variable get RUNNER_LOCATION --repo $Repo 2>$null)
-    if ($LASTEXITCODE -ne 0 -or -not $Location) { $Location = Get-RepoVar AZURE_LOCATION }
-}
+if (-not $Location) { $Location = Invoke-Az group show -n $resourceGroup --query location -o tsv }
 $location = $Location.Trim()
-& gh variable set RUNNER_LOCATION --repo $Repo --body $location | Out-Null
-$stateAccount = Get-RepoVar RS_STORAGE_ACCOUNT
+
+# infra/ci-runner keeps LOCAL state, and that file is the only record of the runner resources.
+# If it is missing while the runner exists, Terraform would try to recreate everything and fail
+# or duplicate. Stop here and recover the file from a backup instead.
+$stateFile = Join-Path $tfDir 'terraform.tfstate'
+$backupDir = Join-Path $env:USERPROFILE '.foundry-platform\ci-runner-state'
+if (-not (Test-Path $stateFile) -and -not $AcceptEmptyState) {
+    $existingVm = Invoke-Az resource list -g $resourceGroup --resource-type Microsoft.Compute/virtualMachines --query "[?tags.purpose=='github-actions-runner'].name" -o tsv
+    if ($existingVm) {
+        throw "No $stateFile, but runner VM '$existingVm' already exists in $resourceGroup. Restore the state file from $backupDir (README: infra/ci-runner local state), or re-import the resources. Use -AcceptEmptyState only if you intend to start over."
+    }
+}
 
 Write-Host '==> Terraform: runner network + VM (AzAPI, local state)'
 $tfArgs = @(
-    "-var=subscription_id=$subscriptionId", "-var=tenant_id=$tenantId",
+    "-var=subscription_id=$($cfg.SubscriptionId)", "-var=tenant_id=$($cfg.TenantId)",
     "-var=resource_group_name=$resourceGroup", "-var=location=$location",
-    "-var=state_storage_account_name=$stateAccount", "-var=vm_size=$VmSize"
+    "-var=state_storage_account_name=$($cfg.StateStorageAccount)", "-var=vm_size=$VmSize"
 )
 Invoke-Checked terraform @("-chdir=$tfDir", 'init', '-input=false')
 Invoke-Checked terraform (@("-chdir=$tfDir", 'plan', '-input=false', '-out=tfplan') + $tfArgs)
@@ -61,6 +65,13 @@ if (-not $AutoApprove) {
 }
 Invoke-Checked terraform @("-chdir=$tfDir", 'apply', '-input=false', 'tfplan')
 Remove-Item (Join-Path $tfDir 'tfplan') -ErrorAction SilentlyContinue
+
+# Timestamped copy outside the repo, so `git clean -x` or a re-clone cannot take the only copy with it.
+New-Item -ItemType Directory -Force -Path $backupDir | Out-Null
+$backup = Join-Path $backupDir ("terraform-{0:yyyyMMdd-HHmmss}.tfstate" -f (Get-Date))
+Copy-Item $stateFile $backup
+Write-Host "==> State backed up to $backup"
+Write-Warning 'That file is sensitive and is the only record of the runner. Also keep a copy in a secure location (password manager vault or encrypted backup).'
 
 $vmName = (& terraform "-chdir=$tfDir" output -raw vm_name)
 
@@ -78,7 +89,6 @@ if ($existing -eq 'online') {
     $script = @"
 set -eu
 cloud-init status --wait >/dev/null || true
-command -v azd >/dev/null || curl -fsSL https://aka.ms/install-azd.sh | bash
 id ghrunner >/dev/null 2>&1 || useradd -m -s /bin/bash ghrunner
 DIR=/home/ghrunner/actions-runner
 mkdir -p "`$DIR" && cd "`$DIR"
@@ -110,8 +120,11 @@ echo RUNNER_OK
     Write-Host "  runner status: $status"
 }
 
+& gh variable set RUNNER_LABEL --repo $Repo --body $RunnerLabel | Out-Null
+
 Write-Host @"
 
 Runner VM : $vmName
 Labels    : self-hosted, linux, $RunnerLabel
+Repo      : $Repo  (use a private/internal repo: PR code runs on this machine)
 "@

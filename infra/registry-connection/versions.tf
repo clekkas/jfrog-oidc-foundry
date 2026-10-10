@@ -2,8 +2,8 @@ terraform {
   # 1.7+ is required for for_each on import blocks.
   required_version = ">= 1.7.0"
 
-  # Remote state in Azure Storage (Entra auth). Settings come from backend.hcl
-  # locally (written by scripts/bootstrap-github-oidc.ps1) or -backend-config in CI.
+  # Remote state in Azure Storage (Entra auth, OIDC in CI). Settings come from
+  # environments/<env>.backend.hcl via -backend-config.
   backend "azurerm" {}
 
   required_providers {

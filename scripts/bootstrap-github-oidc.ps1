@@ -1,247 +1,257 @@
 <#
 .SYNOPSIS
-  One-time (re-runnable) setup for the GitHub Actions deployment pipeline.
+  One-time (re-runnable) bootstrap of the foundation deployment identities for ONE environment.
 
-  Creates or reuses:
-    - Entra app + service principal with a GitHub OIDC federated credential (no client secret)
-    - Role assignments: Foundry Project Manager (project), Reader (resource group),
-      Storage Blob Data Contributor (state storage) for the pipeline and for you
-    - Storage account + container for remote Terraform state (Entra auth only, versioning on)
-    - backend.hcl files for local registry-connection and hosted-agent Terraform runs
-    - GitHub repository variables consumed by .github/workflows/deploy-agent.yml
+  Creates or reuses, with no client secrets anywhere:
+    - Two Entra apps + service principals, each with a GitHub OIDC federated credential bound
+      to a GitHub Environment (not a branch):
+        <AppPrefix>-<env>-apply  <- environment foundation-<env>       (write; protected reviewers)
+        <AppPrefix>-<env>-plan   <- environment foundation-<env>-plan  (read-only; PR plan + drift)
+    - The Terraform state storage account and a DEDICATED foundation state container
+    - Container-scoped RBAC so only the foundation identities (and you) can touch foundation state
+    - Subscription/project RBAC for the two identities
+    - The GitHub Environments, their variables, and (optionally) required reviewers on apply
 
-  Azure values default to the active azd environment; registry values default to
-  infra/registry-connection/terraform.tfvars. Override any of them with parameters.
+  Everything is derived from infra/registry-connection/environments/<env>.tfvars and
+  <env>.backend.hcl. If the backend file is missing it is written with sensible defaults.
 
 .EXAMPLE
-  ./scripts/bootstrap-github-oidc.ps1
+  ./scripts/bootstrap-github-oidc.ps1 -Repo contoso/foundry-platform -EnvName dev -Reviewers alice,contoso/platform-admins
 #>
 [CmdletBinding()]
 param(
-    [string]$Repo = 'clekkas/byor-agent',
-    [string]$Branch = 'main',
-    [string]$AppName = 'github-byor-agent-deployer',
-    [string]$SubscriptionId,
-    [string]$TenantId,
-    [string]$ResourceGroup,
-    [string]$Location,
-    [string]$FoundryAccount,
-    [string]$FoundryProject,
-    [string]$EnvName,
+    [Parameter(Mandatory)][string]$Repo,
+    [Parameter(Mandatory)][string]$EnvName,
+    [string]$AppPrefix = 'github-foundry-platform',
+    # GitHub users and/or org/team-slug required to approve applies. Mandatory (unless -SkipGitHub or -NoRequiredReviewers).
+    # Needs a GitHub plan that supports required reviewers on this repo.
+    [string[]]$Reviewers = @(),
+    [switch]$PreventSelfReview,
+    # Explicit opt-out of required reviewers on the apply environment. Only the main-branch restriction remains,
+    # so a push to main that changes infra/registry-connection applies without a human gate.
+    [switch]$NoRequiredReviewers,
     [string]$StateStorageAccount,
-    [string]$StateContainer = 'tfstate',
-    [string]$JfrogGithubOidcProvider = 'github-oidc',
-    [string]$JfrogRepo,
-    [string]$TerraformVersion = '1.9.8'
+    [string]$StateContainer = 'foundation-tfstate',
+    [string]$TerraformVersion = '1.9.8',
+    [string]$RunnerLabel = 'byor-private',
+    [switch]$SkipOperatorRole,
+    [switch]$SkipGitHub
 )
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
-$tfDir = Join-Path $root 'infra\registry-connection'
-$agentTfDir = Join-Path $root 'infra\hosted-agent'
+. "$PSScriptRoot\_common.ps1"
 
-function Invoke-Az {
-    $out = & az @args
-    if ($LASTEXITCODE -ne 0) { throw "az $($args -join ' ') failed" }
-    $out
+# Guards that must hold before anything is created.
+if (-not $SkipGitHub -and -not $NoRequiredReviewers -and $Reviewers.Count -eq 0) {
+    throw "-Reviewers is required (GitHub users and/or org/team-slug). The apply environment 'foundation-$EnvName' must have required reviewers, and re-running this script without them would clear any set earlier."
 }
-
-function Get-AzdValue([string]$Name) {
-    $v = & azd env get-value $Name 2>$null
-    if ($LASTEXITCODE -eq 0) { $v.Trim() } else { $null }
+$visibility = (& gh repo view $Repo --json visibility --jq .visibility 2>$null)
+if ($LASTEXITCODE -ne 0 -or -not $visibility) { throw "Cannot read repository '$Repo' with gh. Run 'gh auth login' with admin access to the repo." }
+if ($visibility -notin 'PRIVATE', 'INTERNAL') {
+    throw "Repository '$Repo' is $visibility. It must be private or internal: pull request code runs on the self-hosted runner, which has a private network path to Terraform state."
 }
+Write-Host "Repository visibility: $visibility"
 
-function Get-TfVar([string]$Name) {
-    $file = Join-Path $tfDir 'terraform.tfvars'
-    if (-not (Test-Path $file)) { return $null }
-    $m = Select-String -Path $file -Pattern "^\s*$Name\s*=\s*`"([^`"]*)`"" | Select-Object -First 1
-    if ($m) { $m.Matches[0].Groups[1].Value } else { $null }
-}
+$cfg = Get-FoundationConfig -Root $root -EnvName $EnvName
+$missing = 'SubscriptionId', 'TenantId', 'ResourceGroup', 'FoundryAccount', 'FoundryProject' | Where-Object { -not $cfg.$_ }
+if ($missing) { throw "Missing in $($cfg.TfvarsPath): $($missing -join ', ')" }
 
-function Set-RoleAssignment([string]$AssigneeObjectId, [string]$PrincipalType, [string]$Role, [string]$Scope) {
-    $existing = Invoke-Az role assignment list --assignee $AssigneeObjectId --role $Role --scope $Scope --query "[].id" -o tsv
-    if ($existing) { Write-Host "  = $Role ($PrincipalType) already assigned"; return }
-    Invoke-Az role assignment create --assignee-object-id $AssigneeObjectId --assignee-principal-type $PrincipalType --role $Role --scope $Scope -o none
-    Write-Host "  + $Role ($PrincipalType)"
-}
-
-# ---- Resolve inputs -------------------------------------------------------
-Push-Location $root
-try {
-    if (-not $SubscriptionId) { $SubscriptionId = Get-AzdValue AZURE_SUBSCRIPTION_ID }
-    if (-not $TenantId) { $TenantId = Get-AzdValue AZURE_TENANT_ID }
-    if (-not $ResourceGroup) { $ResourceGroup = Get-AzdValue AZURE_RESOURCE_GROUP }
-    if (-not $Location) { $Location = Get-AzdValue AZURE_LOCATION }
-    if (-not $FoundryAccount) { $FoundryAccount = Get-AzdValue AZURE_AI_ACCOUNT_NAME }
-    if (-not $FoundryProject) { $FoundryProject = Get-AzdValue AZURE_AI_PROJECT_NAME }
-    if (-not $EnvName) { $EnvName = Get-AzdValue AZURE_ENV_NAME }
-} finally { Pop-Location }
-
-$registryTarget = Get-TfVar registry_target
-$tokenAudience = Get-TfVar token_audience
-$tokenEndpoint = Get-TfVar token_endpoint
-$registryOidcProvider = Get-TfVar oidc_provider_name
-$connectionName = Get-TfVar connection_name
-if (-not $connectionName) { $connectionName = 'jfrog-registry' }
-if (-not $tokenEndpoint) { $tokenEndpoint = '/access/api/v1/oidc/token' }
-
-if (-not $JfrogRepo) {
-    $image = (Select-String -Path (Join-Path $root 'azure.yaml') -Pattern '^\s*image:\s*"?([^"\s]+)"?' | Select-Object -First 1).Matches[0].Groups[1].Value
-    $JfrogRepo = $image.Split('/')[1]
-}
-
-$required = @{
-    SubscriptionId = $SubscriptionId; TenantId = $TenantId; ResourceGroup = $ResourceGroup; Location = $Location
-    FoundryAccount = $FoundryAccount; FoundryProject = $FoundryProject; EnvName = $EnvName; JfrogRepo = $JfrogRepo
-    registry_target = $registryTarget; token_audience = $tokenAudience; oidc_provider_name = $registryOidcProvider
-}
-$missing = $required.GetEnumerator() | Where-Object { -not $_.Value } | ForEach-Object Key
-if ($missing) { throw "Missing values: $($missing -join ', '). Pass them as parameters or set them in azd env / terraform.tfvars." }
-
+$SubscriptionId = $cfg.SubscriptionId
+$TenantId = $cfg.TenantId
+$ResourceGroup = $cfg.ResourceGroup
+$stateRg = if ($cfg.StateResourceGroup) { $cfg.StateResourceGroup } else { $ResourceGroup }
+if ($cfg.StateStorageAccount) { $StateStorageAccount = $cfg.StateStorageAccount }
+if ($cfg.StateContainer) { $StateContainer = $cfg.StateContainer }
 if (-not $StateStorageAccount) {
-    $hash = [BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes("$SubscriptionId/$ResourceGroup/$Repo"))).Replace('-', '').ToLower()
+    $hash = [BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes("$SubscriptionId/$stateRg/$Repo"))).Replace('-', '').ToLower()
     $StateStorageAccount = "tfstate$($hash.Substring(0, 12))"
 }
 
+$applyEnv = "foundation-$EnvName"
+$planEnv = "foundation-$EnvName-plan"
 $rgId = "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroup"
-$projectId = "$rgId/providers/Microsoft.CognitiveServices/accounts/$FoundryAccount/projects/$FoundryProject"
-$projectEndpoint = "https://$FoundryAccount.services.ai.azure.com/api/projects/$FoundryProject"
-$jfUrl = $registryTarget.TrimEnd('/')
+$projectId = "$rgId/providers/Microsoft.CognitiveServices/accounts/$($cfg.FoundryAccount)/projects/$($cfg.FoundryProject)"
 
 Invoke-Az account set --subscription $SubscriptionId
 
-# ---- Entra app + federated credential ----------------------------------------
-Write-Host "==> Entra app '$AppName'"
-$appId = Invoke-Az ad app list --display-name $AppName --query "[0].appId" -o tsv
-if (-not $appId) {
-    $appId = Invoke-Az ad app create --display-name $AppName --sign-in-audience AzureADMyOrg --query appId -o tsv
-    Write-Host "  + created app $appId"
-} else { Write-Host "  = app $appId" }
-
-$spId = Invoke-Az ad sp list --filter "appId eq '$appId'" --query "[0].id" -o tsv
-if (-not $spId) {
-    $spId = Invoke-Az ad sp create --id $appId --query id -o tsv
-    Write-Host "  + created service principal $spId"
-} else { Write-Host "  = service principal $spId" }
+function Set-RoleAssignment([string]$ObjectId, [string]$PrincipalType, [string]$Role, [string]$Scope) {
+    $existing = Invoke-Az role assignment list --assignee $ObjectId --role $Role --scope $Scope --query "[].id" -o tsv
+    if ($existing) { Write-Host "  = $Role ($PrincipalType)"; return }
+    Invoke-Az role assignment create --assignee-object-id $ObjectId --assignee-principal-type $PrincipalType --role $Role --scope $Scope -o none
+    Write-Host "  + $Role ($PrincipalType)"
+}
 
 # GitHub may issue ID-based ("immutable") subjects, e.g. repo:owner@123/repo@456:...; use whatever prefix the repo reports.
 $subPrefix = & gh api "repos/$Repo/actions/oidc/customization/sub" --jq '.sub_claim_prefix // empty' 2>$null
 if ($LASTEXITCODE -ne 0 -or -not $subPrefix) { $subPrefix = "repo:$Repo" }
-$subject = "$($subPrefix.Trim()):ref:refs/heads/$Branch"
-$fics = Invoke-Az ad app federated-credential list --id $appId -o json | ConvertFrom-Json
-if ($fics | Where-Object { $_.subject -eq $subject }) {
-    Write-Host "  = federated credential for $subject"
-} else {
-    $fic = @{
-        name      = "github-$($Repo.Replace('/', '-'))-$Branch$(if ($subPrefix -match '@') { '-ids' })"
-        issuer    = 'https://token.actions.githubusercontent.com'
-        subject   = $subject
-        audiences = @('api://AzureADTokenExchange')
-    } | ConvertTo-Json -Compress
-    $ficFile = New-TemporaryFile
-    Set-Content -Path $ficFile -Value $fic -Encoding utf8
-    try { Invoke-Az ad app federated-credential create --id $appId --parameters "@$ficFile" -o none } finally { Remove-Item $ficFile }
-    Write-Host "  + federated credential for $subject"
+$subPrefix = $subPrefix.Trim()
+
+function Initialize-Identity([string]$Name, [string]$GitHubEnvironment) {
+    Write-Host "==> Entra app '$Name' (OIDC subject: environment:$GitHubEnvironment)"
+    $appId = Invoke-Az ad app list --display-name $Name --query "[0].appId" -o tsv
+    if (-not $appId) {
+        $appId = Invoke-Az ad app create --display-name $Name --sign-in-audience AzureADMyOrg --query appId -o tsv
+        Write-Host "  + app $appId"
+    } else { Write-Host "  = app $appId" }
+
+    $spId = Invoke-Az ad sp list --filter "appId eq '$appId'" --query "[0].id" -o tsv
+    if (-not $spId) {
+        $spId = Invoke-Az ad sp create --id $appId --query id -o tsv
+        Write-Host "  + service principal $spId"
+    } else { Write-Host "  = service principal $spId" }
+
+    $subject = "${subPrefix}:environment:$GitHubEnvironment"
+    $fics = Invoke-Az ad app federated-credential list --id $appId -o json | ConvertFrom-Json
+    if ($fics | Where-Object { $_.subject -eq $subject }) {
+        Write-Host "  = federated credential $subject"
+    } else {
+        $fic = @{
+            name      = "github-$($Repo.Replace('/', '-'))-$GitHubEnvironment$(if ($subPrefix -match '@') { '-ids' })"
+            issuer    = 'https://token.actions.githubusercontent.com'
+            subject   = $subject
+            audiences = @('api://AzureADTokenExchange')
+        } | ConvertTo-Json -Compress
+        $ficFile = New-TemporaryFile
+        Set-Content -Path $ficFile -Value $fic -Encoding utf8
+        try { Invoke-Az ad app federated-credential create --id $appId --parameters "@$ficFile" -o none } finally { Remove-Item $ficFile }
+        Write-Host "  + federated credential $subject"
+    }
+    [pscustomobject]@{ AppId = $appId; SpId = $spId }
 }
 
-# ---- Terraform state storage ---------------------------------------------------
-Write-Host "==> State storage '$StateStorageAccount'"
-$saId = & az storage account show -n $StateStorageAccount -g $ResourceGroup --query id -o tsv 2>$null
+$apply = Initialize-Identity "$AppPrefix-$EnvName-apply" $applyEnv
+$plan = Initialize-Identity "$AppPrefix-$EnvName-plan" $planEnv
+
+# ---- Terraform state: dedicated container --------------------------------------
+Write-Host "==> State storage '$StateStorageAccount' / container '$StateContainer'"
+$saId = & az storage account show -n $StateStorageAccount -g $stateRg --query id -o tsv 2>$null
 if (-not $saId) {
-    $saId = Invoke-Az storage account create -n $StateStorageAccount -g $ResourceGroup -l $Location `
+    $location = Invoke-Az group show -n $stateRg --query location -o tsv
+    $saId = Invoke-Az storage account create -n $StateStorageAccount -g $stateRg -l $location `
         --sku Standard_LRS --kind StorageV2 --min-tls-version TLS1_2 `
         --allow-blob-public-access false --allow-shared-key-access false `
         --tags purpose=terraform-state repo=$Repo --query id -o tsv
-    Invoke-Az storage account blob-service-properties update --account-name $StateStorageAccount -g $ResourceGroup --enable-versioning true -o none
+    Invoke-Az storage account blob-service-properties update --account-name $StateStorageAccount -g $stateRg --enable-versioning true -o none
     Write-Host "  + created $saId"
 } else { Write-Host "  = $saId" }
 
-# ---- Role assignments ----------------------------------------------------------
-Write-Host '==> Role assignments (pipeline)'
-Set-RoleAssignment $spId 'ServicePrincipal' 'Foundry Project Manager' $projectId
-Set-RoleAssignment $spId 'ServicePrincipal' 'Reader' $rgId
-Set-RoleAssignment $spId 'ServicePrincipal' 'Storage Blob Data Contributor' $saId
+# Management-plane create: works even when the account's public network access is disabled.
+if ((Invoke-Az storage container-rm exists --storage-account $StateStorageAccount -g $stateRg -n $StateContainer --query exists -o tsv) -ne 'true') {
+    Invoke-Az storage container-rm create --storage-account $StateStorageAccount -g $stateRg -n $StateContainer -o none
+    Write-Host "  + container created"
+} else { Write-Host "  = container exists" }
+$containerScope = "$saId/blobServices/default/containers/$StateContainer"
 
-Write-Host '==> Role assignments (you, for local terraform with Entra-auth state)'
-$me = Invoke-Az ad signed-in-user show --query id -o tsv
-Set-RoleAssignment $me 'User' 'Storage Blob Data Contributor' $saId
-
-# Management-plane create: works even though the account's public network access is disabled.
-Write-Host "==> Container '$StateContainer'"
-if ((Invoke-Az storage container-rm exists --storage-account $StateStorageAccount -g $ResourceGroup -n $StateContainer --query exists -o tsv) -ne 'true') {
-    Invoke-Az storage container-rm create --storage-account $StateStorageAccount -g $ResourceGroup -n $StateContainer -o none
-    Write-Host '  + created'
-} else { Write-Host '  = exists' }
-
-# ---- Local backend config ------------------------------------------------------
-$stateKey = "registry-connection/$EnvName.tfstate"
-@"
-resource_group_name  = "$ResourceGroup"
+if (-not (Test-Path $cfg.BackendPath)) {
+    @"
+resource_group_name  = "$stateRg"
 storage_account_name = "$StateStorageAccount"
 container_name       = "$StateContainer"
-key                  = "$stateKey"
+key                  = "registry-connection/$EnvName.tfstate"
 use_azuread_auth     = true
-"@ | Set-Content -Path (Join-Path $tfDir 'backend.hcl') -Encoding utf8
-Write-Host "==> Wrote infra/registry-connection/backend.hcl"
-
-$agentStateKey = "hosted-agent/$EnvName.tfstate"
-@"
-resource_group_name  = "$ResourceGroup"
-storage_account_name = "$StateStorageAccount"
-container_name       = "$StateContainer"
-key                  = "$agentStateKey"
-use_azuread_auth     = true
-"@ | Set-Content -Path (Join-Path $agentTfDir 'backend.hcl') -Encoding utf8
-Write-Host "==> Wrote infra/hosted-agent/backend.hcl"
-
-# ---- GitHub repository variables -------------------------------------------------
-Write-Host "==> GitHub variables on $Repo"
-$vars = [ordered]@{
-    AZURE_CLIENT_ID              = $appId
-    AZURE_TENANT_ID              = $TenantId
-    AZURE_SUBSCRIPTION_ID        = $SubscriptionId
-    AZURE_ENV_NAME               = $EnvName
-    AZURE_LOCATION               = $Location
-    AZURE_RESOURCE_GROUP         = $ResourceGroup
-    FOUNDRY_ACCOUNT_NAME         = $FoundryAccount
-    FOUNDRY_PROJECT_NAME         = $FoundryProject
-    FOUNDRY_PROJECT_ENDPOINT     = $projectEndpoint
-    RS_RESOURCE_GROUP            = $ResourceGroup
-    RS_STORAGE_ACCOUNT           = $StateStorageAccount
-    RS_CONTAINER_NAME            = $StateContainer
-    TF_STATE_KEY                 = $stateKey
-    TERRAFORM_VERSION            = $TerraformVersion
-    JF_URL                       = $jfUrl
-    JFROG_REPO                   = $JfrogRepo
-    JFROG_GITHUB_OIDC_PROVIDER   = $JfrogGithubOidcProvider
-    JFROG_REGISTRY_CONNECTION_NAME = $connectionName
-    REGISTRY_TOKEN_AUDIENCE      = $tokenAudience
-    REGISTRY_TOKEN_ENDPOINT      = $tokenEndpoint
-    REGISTRY_OIDC_PROVIDER_NAME  = $registryOidcProvider
-    # Adopt an existing connection into remote state on first run; no-op afterwards.
-    REGISTRY_IMPORT_EXISTING     = 'true'
-    RUNNER_LABEL                 = 'byor-private'
+"@ | Set-Content -Path $cfg.BackendPath -Encoding utf8
+    Write-Host "  + wrote $($cfg.BackendPath) (commit it)"
 }
-foreach ($k in $vars.Keys) {
-    & gh variable set $k --repo $Repo --body $vars[$k] | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "gh variable set $k failed" }
-    Write-Host "  $k = $($vars[$k])"
+
+# ---- RBAC ----------------------------------------------------------------------
+Write-Host "==> RBAC: apply identity (write)"
+Set-RoleAssignment $apply.SpId 'ServicePrincipal' 'Foundry Project Manager' $projectId
+Set-RoleAssignment $apply.SpId 'ServicePrincipal' 'Reader' $rgId
+Set-RoleAssignment $apply.SpId 'ServicePrincipal' 'Storage Blob Data Contributor' $containerScope
+
+Write-Host "==> RBAC: plan identity (read-only)"
+Set-RoleAssignment $plan.SpId 'ServicePrincipal' 'Reader' $rgId
+Set-RoleAssignment $plan.SpId 'ServicePrincipal' 'Storage Blob Data Reader' $containerScope
+
+if (-not $SkipOperatorRole) {
+    Write-Host "==> RBAC: you (local terraform / one-time state migration)"
+    $me = Invoke-Az ad signed-in-user show --query id -o tsv
+    Set-RoleAssignment $me 'User' 'Storage Blob Data Contributor' $containerScope
+}
+
+# App repos must not read foundation state. Anything granted blob data roles on the whole
+# account can, so list those for review.
+Write-Host "==> Review: blob data roles granted at ACCOUNT scope (these principals can read foundation state)"
+$wide = Invoke-Az role assignment list --scope $saId --query "[?scope=='$saId' && starts_with(roleDefinitionName,'Storage Blob Data')].{principal:principalName,type:principalType,role:roleDefinitionName}" -o json | ConvertFrom-Json
+if ($wide) { $wide | Format-Table -AutoSize | Out-String | Write-Host; Write-Host '  Scope those to their own containers (README: Foundation state isolation).' }
+else { Write-Host '  none' }
+
+# ---- GitHub ----------------------------------------------------------------------
+function Resolve-Reviewer([string]$Name) {
+    if ($Name -match '^(?<org>[^/]+)/(?<slug>.+)$') {
+        $id = & gh api "orgs/$($Matches.org)/teams/$($Matches.slug)" --jq .id
+        @{ type = 'Team'; id = [int64]$id }
+    } else {
+        $id = & gh api "users/$Name" --jq .id
+        @{ type = 'User'; id = [int64]$id }
+    }
+}
+
+function Initialize-GitHubEnvironment([string]$Name, [hashtable]$Vars, [bool]$Protected) {
+    Write-Host "==> GitHub environment '$Name'"
+    $body = @{}
+    if ($Protected) {
+        $body.deployment_branch_policy = @{ protected_branches = $false; custom_branch_policies = $true }
+        # An empty reviewers array is rejected on plans without required reviewers (HTTP 422), so omit the key.
+        if (-not $NoRequiredReviewers) {
+            $body.reviewers = @($Reviewers | ForEach-Object { Resolve-Reviewer $_ })
+            $body.prevent_self_review = [bool]$PreventSelfReview
+        }
+    } else {
+        $body.deployment_branch_policy = $null
+    }
+    $body | ConvertTo-Json -Depth 5 | & gh api -X PUT "repos/$Repo/environments/$Name" --input - | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Could not create environment $Name (required reviewers need a GitHub plan that supports them on this repo)" }
+
+    if ($Protected) {
+        $existing = & gh api "repos/$Repo/environments/$Name/deployment-branch-policies" --jq '.branch_policies[].name'
+        if ($existing -notcontains 'main') {
+            @{ name = 'main'; type = 'branch' } | ConvertTo-Json | & gh api -X POST "repos/$Repo/environments/$Name/deployment-branch-policies" --input - | Out-Null
+        }
+
+        # Read back: fail loudly rather than leave the write identity reachable without approval.
+        $envInfo = & gh api "repos/$Repo/environments/$Name" | ConvertFrom-Json
+        $reviewerCount = @($envInfo.protection_rules | Where-Object type -eq 'required_reviewers' | ForEach-Object { $_.reviewers }).Count
+        if ($NoRequiredReviewers) { Write-Warning "Environment '$Name' has NO required reviewers (-NoRequiredReviewers): a push to main that changes infra/registry-connection applies without approval. Re-run with -Reviewers to restore the gate." }
+        elseif ($reviewerCount -lt 1) { throw "Environment '$Name' has no required reviewers after configuration." }
+        if (-not $envInfo.deployment_branch_policy.custom_branch_policies) { throw "Environment '$Name' is not restricted to custom deployment branches." }
+        $branches = & gh api "repos/$Repo/environments/$Name/deployment-branch-policies" --jq '[.branch_policies[].name] | join(",")'
+        Write-Host "  verified: $reviewerCount required reviewer(s); deployment branches: $branches"
+        if ($branches -ne 'main') { Write-Warning "Deployment branches for '$Name' are '$branches', expected only 'main'. Remove extras in Settings -> Environments." }
+    }
+    foreach ($k in $Vars.Keys) {
+        & gh variable set $k --repo $Repo --env $Name --body $Vars[$k] | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "gh variable set $k ($Name) failed" }
+        Write-Host "  $k = $($Vars[$k])"
+    }
+}
+
+if (-not $SkipGitHub) {
+    Initialize-GitHubEnvironment $applyEnv ([ordered]@{
+            AZURE_CLIENT_ID = $apply.AppId; AZURE_TENANT_ID = $TenantId; AZURE_SUBSCRIPTION_ID = $SubscriptionId
+        }) $true
+    Initialize-GitHubEnvironment $planEnv ([ordered]@{
+            AZURE_CLIENT_ID = $plan.AppId; AZURE_TENANT_ID = $TenantId; AZURE_SUBSCRIPTION_ID = $SubscriptionId
+        }) $false
+
+    Write-Host "==> GitHub repository variables"
+    foreach ($kv in @{ TERRAFORM_VERSION = $TerraformVersion; RUNNER_LABEL = $RunnerLabel }.GetEnumerator()) {
+        & gh variable set $kv.Key --repo $Repo --body $kv.Value | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "gh variable set $($kv.Key) failed" }
+        Write-Host "  $($kv.Key) = $($kv.Value)"
+    }
 }
 
 Write-Host @"
 
-==> Done. Remaining manual step in JFrog ($jfUrl):
-  Administration > General Management > Manage Integrations > New Integration > OpenID Connect
-    Provider type : GitHub
-    Provider name : $JfrogGithubOidcProvider
-    Provider URL  : https://token.actions.githubusercontent.com
-  Identity mapping on that integration:
-    Claims JSON   : {"repository":"$Repo","ref":"refs/heads/$Branch"}
-    Token scope   : a group/user with Read + Deploy/Cache on the LOCAL repo behind '$JfrogRepo' (e.g. '$JfrogRepo-local')
+==> Done for '$EnvName'.
+  apply identity : $AppPrefix-$EnvName-apply  ($($apply.AppId))  <- environment $applyEnv
+  plan identity  : $AppPrefix-$EnvName-plan  ($($plan.AppId))  <- environment $planEnv
 
-  The state account has public network access disabled (subscription policy), so the
-  deploy job runs on a self-hosted runner: ./scripts/setup-runner.ps1
-
-  If you need to reach state from elsewhere, you need network line of sight to its
-  private endpoint (backend.hcl is written for that case).
+Next:
+  1. Commit infra/registry-connection/environments/$EnvName.backend.hcl if it was just written.
+  2. Runner (state account has no public access): ./scripts/setup-runner.ps1 -Repo $Repo -EnvName $EnvName
+  3. If this environment already has state in the old location: ./scripts/migrate-state.ps1 -EnvName $EnvName
+  4. Work through README: PRE-CUTOVER checklist before the first apply.
 "@
