@@ -92,7 +92,8 @@ cloud-init status --wait >/dev/null || true
 id ghrunner >/dev/null 2>&1 || useradd -m -s /bin/bash ghrunner
 DIR=/home/ghrunner/actions-runner
 mkdir -p "`$DIR" && cd "`$DIR"
-if [ -f .runner ]; then ./svc.sh stop || true; ./svc.sh uninstall || true; rm -f .runner .credentials .credentials_rsaparams; fi
+if [ -f .runner ]; then ./svc.sh stop || true; ./svc.sh uninstall || true; fi
+rm -f .runner .credentials .credentials_rsaparams .runner_migrated .credentials_migrated .credentials_rsaparams_migrated
 if [ ! -f config.sh ]; then
   VER=`$(curl -fsSL https://api.github.com/repos/actions/runner/releases/latest | jq -r .tag_name | sed 's/^v//')
   curl -fsSL -o runner.tgz "https://github.com/actions/runner/releases/download/v`${VER}/actions-runner-linux-x64-`${VER}.tar.gz"
