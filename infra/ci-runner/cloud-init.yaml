@@ -1,0 +1,17 @@
+#cloud-config
+# Tooling for the GitHub Actions runner. The runner itself is registered later by
+# scripts/setup-runner.ps1 (needs a short-lived registration token).
+package_update: true
+packages:
+  - ca-certificates
+  - curl
+  - git
+  - jq
+  - unzip
+users:
+  - default
+  - name: ghrunner
+    shell: /bin/bash
+    lock_passwd: true
+runcmd:
+  - curl -fsSL https://aka.ms/install-azd.sh | bash

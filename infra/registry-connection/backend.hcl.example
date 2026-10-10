@@ -1,0 +1,5 @@
+resource_group_name  = "terraform-state-rg"
+storage_account_name = "exampletfstate"
+container_name       = "foundation-tfstate"
+key                  = "registry-connection/byor-demo.tfstate"
+use_azuread_auth     = true
