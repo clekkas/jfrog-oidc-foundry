@@ -15,3 +15,4 @@ users:
     lock_passwd: true
 runcmd:
   - curl -fsSL https://aka.ms/install-azd.sh | bash
+  - curl -fsSL https://aka.ms/InstallAzureCLIDeb | bash

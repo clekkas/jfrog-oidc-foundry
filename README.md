@@ -54,10 +54,10 @@ contracts/
 infra/
   registry-connection/         Foundation Terraform (azapi): JFrog connection + platform_contract output
     environments/              <env>.tfvars (committed, non-secret) and <env>.backend.hcl
-  ci-runner/                   Bootstrap layer: VNet, state private endpoint, runner VM (local state)
+  ci-runner/                   Bootstrap layer: VNet, state private endpoint, two runner VMs (foundation, agent; local state)
 scripts/
   bootstrap-github-oidc.ps1    Identities, federated credentials, state container, RBAC, GitHub environments
-  setup-runner.ps1             Provision and register the self-hosted runner (backs up its local state)
+  setup-runner.ps1             Provision the runner VMs and register one (-RunnerKey foundation|agent); backs up local state
   migrate-state.ps1            One-time, verified copy of foundation state to the new container
   build-contract.sh            Validate the Terraform output and build the contract JSON + summary
   _common.ps1                  Shared helpers
@@ -248,6 +248,8 @@ top; the bootstrap script enforces it).
 
 # 3. Private runner with a private endpoint to the state account.
 ./scripts/setup-runner.ps1 -Repo contoso/foundry-platform -EnvName dev
+#    Second, isolated runner VM for the agent repo (same label, registered to that repo only):
+./scripts/setup-runner.ps1 -Repo contoso/agent-repo -EnvName dev -RunnerKey agent
 
 # 4. Only if state already exists in the old location: verified copy (see "Migrating existing state").
 ./scripts/migrate-state.ps1 -EnvName dev
@@ -336,8 +338,12 @@ store its own state in that backend. It keeps **local** state in
   - Keep one more copy somewhere secure (vault or encrypted backup) and refresh it after every run.
 - **Recovery** if the file is lost: copy the newest backup to `infra/ci-runner/terraform.tfstate`
   and run `terraform plan`. With no backup, import each resource by its Azure resource ID
-  (`terraform import '<address>' <id>`; addresses are in `main.tf`, the VM is `byor-ci-runner-01`)
-  until the plan is clean.
+  (`terraform import '<address>' <id>`; addresses are in `main.tf`, the VMs are `byor-ci-runner-01`
+  for the foundation repo and `byor-ci-agent-runner-01` for the agent repo) until the plan is clean.
+- **Azure CLI on the runners:** `cloud-init.yaml` installs `az` on newly created VMs. The agent VM was
+  created before that line existed, so `az` was installed on it by hand with `az vm run-command`.
+  `azure/login` fails with `Unable to locate executable file: az` on a runner without it. The VM
+  resource ignores `osProfile` changes, so editing cloud-init never alters an existing VM.
 - Losing it does **not** lose foundation state (that lives in the storage account), but a missing
   or broken runner blocks every workflow.
 
@@ -453,13 +459,15 @@ variables `TERRAFORM_VERSION` and `RUNNER_LABEL`.
 
 ```powershell
 ./scripts/setup-runner.ps1 -Repo <repo> -EnvName dev
+./scripts/setup-runner.ps1 -Repo <agent-repo> -EnvName dev -RunnerKey agent   # second VM, agent repo
 ```
 ```bash
 gh api repos/<repo>/actions/runners --jq '.runners[] | {name, status, labels: [.labels[].name]}'
+gh api repos/<agent-repo>/actions/runners --jq '.runners[] | {name, status, labels: [.labels[].name]}'
 ls -l infra/ci-runner/terraform.tfstate "$USERPROFILE/.foundry-platform/ci-runner-state/"
 ```
-Expected: the runner is `online` with label `byor-private`; the state file exists and at least one
-timestamped backup exists. Copy a backup to a secure second location now.
+Expected: each repo shows its own runner `online` with label `byor-private`; the state file exists and
+at least one timestamped backup exists. Copy a backup to a secure second location now.
 
 **6. Migrate state** (from a machine with a network path to the state account)
 

@@ -1,16 +1,23 @@
 <#
 .SYNOPSIS
-  Provision the self-hosted GitHub Actions runner (infra/ci-runner, AzAPI) and register
-  it with the platform repository. Re-runnable.
+  Provision the self-hosted GitHub Actions runners (infra/ci-runner, AzAPI) and register
+  one of them with a repository. Re-runnable.
 
-  The state storage account has public network access disabled, so every foundation workflow
-  runs on this runner. It lives in a VNet with a private endpoint to the state account and
-  outbound-only internet. No inbound access; management is via az vm run-command.
+  infra/ci-runner creates two isolated runner VMs: 'foundation' (this repo) and 'agent' (the
+  agent repo). -RunnerKey selects which one is registered to -Repo.
+
+  The state storage account has public network access disabled, so every workflow that touches
+  Terraform state runs on a runner. Each lives in a VNet with a private endpoint to the state
+  account and outbound-only internet. No inbound access; management is via az vm run-command.
 
   infra/ci-runner is a bootstrap layer with LOCAL state (git-ignored). Keep that state safe.
 
 .EXAMPLE
   ./scripts/setup-runner.ps1 -Repo contoso/foundry-platform -EnvName dev
+
+.EXAMPLE
+  # Runner for the agent repo (second VM, registered to that repo only)
+  ./scripts/setup-runner.ps1 -Repo contoso/agent-repo -EnvName dev -RunnerKey agent
 #>
 [CmdletBinding()]
 param(
