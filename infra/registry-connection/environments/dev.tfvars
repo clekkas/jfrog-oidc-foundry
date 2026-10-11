@@ -20,6 +20,7 @@ jfrog_github_oidc_provider_name = "github-oidc"
 # repo; pushes land in its local repo (byor-demo-docker-local). Published as JFROG_REPO.
 jfrog_repository_key = "byor-demo-docker"
 
-# The connection was originally created with `azd ai connection create`; adopt it.
-# No-op once it is in state.
-import_existing_connection = true
+# Both connections already exist in Foundry. Keeping these imports enabled makes
+# an empty or incomplete state adopt them instead of planning duplicate creates.
+import_existing_connection        = true
+import_existing_jfrog_connection = true

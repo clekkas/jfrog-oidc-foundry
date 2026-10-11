@@ -86,7 +86,13 @@ variable "jfrog_repository_key" {
 }
 
 variable "import_existing_connection" {
-  description = "Adopt the legacy connection that existed before Terraform ownership. No-op once it is in state."
+  description = "Adopt the legacy connection that existed before Terraform ownership. Keep true for environments where that connection must already exist; the import is a no-op once it is in state."
+  type        = bool
+  default     = false
+}
+
+variable "import_existing_jfrog_connection" {
+  description = "Adopt the active JFrog connection that existed before Terraform ownership. Keep true for environments where that connection must already exist; the import is a no-op once it is in state."
   type        = bool
   default     = false
 }

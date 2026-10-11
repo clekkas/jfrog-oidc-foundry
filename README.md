@@ -486,7 +486,7 @@ Expected: `state list` includes `data.azapi_resource.project`, `azapi_resource.l
 
 | Result | Meaning | Action |
 | --- | --- | --- |
-| Plan wants to **create** `jfrog_registry` (or `legacy_registry`) | The connection exists in Azure but not in this state | Add an `import` block for it and re-plan. Do not apply as is: it fails or duplicates. |
+| Plan wants to **create** `jfrog_registry` (or `legacy_registry`) | The connection exists in Azure but its matching import flag is false, or the wrong state/backend is in use | Set `import_existing_jfrog_connection = true` and/or `import_existing_connection = true`, verify the backend, and re-plan. Do not apply as is. Keep an import flag true when the named connection is required to pre-exist; imports are no-ops after adoption and fail safely if the remote object is absent. |
 | Plan wants to **destroy** or replace anything | Wrong state, wrong tfvars, or drift | **Stop.** Do not apply (`prevent_destroy` also blocks it). |
 | In-place update of `body` only | Drift between state and Azure | Review. Fix the tfvars to match Azure, or accept the update deliberately. |
 | `Error acquiring the state lock` / `403` | Old pipeline still running, or missing role | Re-check step 3 and your role on the container. |

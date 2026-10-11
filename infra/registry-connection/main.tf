@@ -26,6 +26,12 @@ import {
   id       = "${local.project_id}/connections/${each.value}"
 }
 
+import {
+  for_each = var.import_existing_jfrog_connection ? toset([var.connection_name]) : toset([])
+  to       = azapi_resource.jfrog_registry
+  id       = "${local.project_id}/connections/${each.value}"
+}
+
 moved {
   from = azapi_resource.registry_connection
   to   = azapi_resource.legacy_registry
@@ -56,6 +62,11 @@ resource "azapi_resource" "legacy_registry" {
 
   lifecycle {
     prevent_destroy = true
+
+    precondition {
+      condition     = var.connection_name != var.legacy_connection_name
+      error_message = "connection_name and legacy_connection_name must identify different Foundry connections."
+    }
   }
 }
 

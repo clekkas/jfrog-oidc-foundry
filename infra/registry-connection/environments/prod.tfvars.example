@@ -16,5 +16,7 @@ oidc_provider_name = "<jfrog-entra-oidc-provider-name>"
 jfrog_github_oidc_provider_name = "github-oidc"
 jfrog_repository_key            = "<repository-key>"
 
-# Set to true once if the connection already exists outside Terraform.
-import_existing_connection = false
+# Set the matching flag to true when that connection must already exist outside
+# Terraform. Leave false only when this stack is expected to create it.
+import_existing_connection        = false
+import_existing_jfrog_connection = false
