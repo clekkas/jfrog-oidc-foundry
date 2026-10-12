@@ -59,6 +59,7 @@ scripts/
   bootstrap-github-oidc.ps1    Identities, federated credentials, state container, RBAC, GitHub environments
   setup-runner.ps1             Provision the runner VMs and register one (-RunnerKey foundation|agent); backs up local state
   migrate-state.ps1            One-time, verified copy of foundation state to the new container
+  demo-registry-connection.ps1 Two-phase failure/recovery demo for the registry connection and hosted-agent deployment
   build-contract.sh            Validate the Terraform output and build the contract JSON + summary
   _common.ps1                  Shared helpers
 ```
@@ -75,6 +76,33 @@ account has public network access disabled. Authentication is GitHub OIDC to Ent
 | `foundation-plan` | Pull request touching foundation paths | `foundation-<env>-plan` (read-only) | `terraform fmt -check`, `validate`, `plan` for every environment with an `environments/<env>.tfvars`. Runs with `-lock=false`. |
 | `foundation-apply` | Push to `main` (applies `dev`); manual dispatch for `dev` or `prod` (main only) | plan job and contract job: `-plan` identity. apply job: `foundation-<env>` (write) | Saves the plan, waits for the environment's required reviewers, applies **that exact plan**. A stale plan fails and must be re-run. |
 | `foundation-drift` | Daily 05:23 UTC and manual | `foundation-<env>-plan` | `plan -detailed-exitcode`. Exit 2 opens or updates a `foundation-drift` issue and fails the run. A clean plan closes it. |
+
+### Registry connection failure/recovery demo
+
+The demo orchestrator intentionally breaks the dev Foundry-to-JFrog OIDC connection, proves the
+failure with a new hosted-agent image/version, pauses for presenter approval, then restores the
+connection and redeploys the exact image that failed:
+
+```powershell
+./scripts/demo-registry-connection.ps1 -Phase Break
+# Return to chat and wait for the presenter to approve recovery.
+./scripts/demo-registry-connection.ps1 -Phase Fix
+```
+
+`Break` changes `oidc_provider_name`, commits and pushes to `main`, waits for
+`foundation-apply`, and requires the agent workflow to fail with `exchange_failed` and
+`oidc integration doesn't exist`. It records a non-secret recovery checkpoint under
+`%USERPROFILE%\.foundry-platform` and exits while the connection is intentionally broken.
+
+`Fix` refuses to run without that proven-failure checkpoint. It restores the original provider,
+waits for the foundation recovery, redeploys the exact failed image tag, and requires both active
+version and smoke-test evidence. Each phase starts offline runner VMs when needed and deallocates
+only VMs that it started. Use `-KeepRunnersRunning` only when another demo immediately follows.
+
+Run the script from a clean, synchronized `main` branch. It intentionally creates commits in
+both repositories and requires authenticated `az`, `gh`, and `git` commands. If a phase stops
+after the connection is broken, preserve the checkpoint and run `-Phase Fix`; do not start a
+second `Break` phase.
 
 ### Platform contract publication
 
