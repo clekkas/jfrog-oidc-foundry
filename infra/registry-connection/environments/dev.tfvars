@@ -12,7 +12,7 @@ connection_name    = "jfrog-registry"
 registry_target    = "https://trialndswdc.jfrog.io"
 token_audience     = "69500e76-a944-435f-9d97-28822dc29c43"
 token_endpoint     = "/access/api/v1/oidc/token"
-oidc_provider_name = "oidc-byor"
+oidc_provider_name = "oidc-byor-demo-invalid"
 
 # Published to app repos through the platform contract (not managed by Terraform).
 jfrog_github_oidc_provider_name = "github-oidc"
