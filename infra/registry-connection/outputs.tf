@@ -46,9 +46,9 @@ output "platform_contract" {
     foundry_project_resource_id     = data.azapi_resource.project.id
     foundry_project_endpoint        = "https://${var.foundry_account_name}.services.ai.azure.com/api/projects/${var.foundry_project_name}"
     foundry_project_principal_id    = data.azapi_resource.project.output.identity.principalId
-    registry_connection_name        = azapi_resource.jfrog_registry.name
-    registry_connection_resource_id = azapi_resource.jfrog_registry.id
-    registry_target                 = azapi_resource.jfrog_registry.output.properties.target
+    registry_connection_name        = var.manage_account_scoped_connection ? azapi_resource.jfrog_registry_acct[0].name : data.azapi_resource.jfrog_registry_acct[0].name
+    registry_connection_resource_id = var.manage_account_scoped_connection ? azapi_resource.jfrog_registry_acct[0].id : data.azapi_resource.jfrog_registry_acct[0].id
+    registry_target                 = var.manage_account_scoped_connection ? azapi_resource.jfrog_registry_acct[0].output.properties.target : data.azapi_resource.jfrog_registry_acct[0].output.properties.target
     registry_token_audience         = var.token_audience
     registry_token_endpoint         = var.token_endpoint
     registry_oidc_provider_name     = var.oidc_provider_name
