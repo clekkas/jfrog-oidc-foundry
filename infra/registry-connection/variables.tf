@@ -91,8 +91,20 @@ variable "import_existing_connection" {
   default     = false
 }
 
+variable "manage_legacy_connection" {
+  description = "Manage the previous project-scoped connection in this environment. Disable for new projects that do not use the legacy connection."
+  type        = bool
+  default     = true
+}
+
 variable "import_existing_jfrog_connection" {
   description = "Adopt the active JFrog connection that existed before Terraform ownership. Keep true for environments where that connection must already exist; the import is a no-op once it is in state."
   type        = bool
   default     = false
+}
+
+variable "manage_account_scoped_connection" {
+  description = "Manage the account-wide shared connection from this state. Keep enabled only in its owning environment; additional project environments read it as data."
+  type        = bool
+  default     = true
 }

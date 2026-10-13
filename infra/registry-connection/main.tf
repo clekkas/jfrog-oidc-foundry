@@ -21,8 +21,8 @@ data "azapi_resource" "project" {
 }
 
 import {
-  for_each = var.import_existing_connection ? toset([var.legacy_connection_name]) : toset([])
-  to       = azapi_resource.legacy_registry
+  for_each = var.manage_legacy_connection && var.import_existing_connection ? toset([var.legacy_connection_name]) : toset([])
+  to       = azapi_resource.legacy_registry[0]
   id       = "${local.project_id}/connections/${each.value}"
 }
 
@@ -37,8 +37,19 @@ moved {
   to   = azapi_resource.legacy_registry
 }
 
+moved {
+  from = azapi_resource.legacy_registry
+  to   = azapi_resource.legacy_registry[0]
+}
+
+moved {
+  from = azapi_resource.jfrog_registry_acct
+  to   = azapi_resource.jfrog_registry_acct[0]
+}
+
 # Retain the previous connection while the new JFrog-specific name is validated.
 resource "azapi_resource" "legacy_registry" {
+  count     = var.manage_legacy_connection ? 1 : 0
   type      = "Microsoft.CognitiveServices/accounts/projects/connections@2025-06-01"
   name      = var.legacy_connection_name
   parent_id = data.azapi_resource.project.id
@@ -100,6 +111,7 @@ resource "azapi_resource" "jfrog_registry" {
 
 # POC: account-scoped registry connection, shared to all projects.
 resource "azapi_resource" "jfrog_registry_acct" {
+  count     = var.manage_account_scoped_connection ? 1 : 0
   type      = "Microsoft.CognitiveServices/accounts/connections@2025-06-01"
   name      = "${var.connection_name}-acct" # -> jfrog-registry-acct
   parent_id = local.account_id
@@ -125,4 +137,14 @@ resource "azapi_resource" "jfrog_registry_acct" {
   lifecycle {
     prevent_destroy = true
   }
+}
+
+# Additional project environments read the account-wide connection owned by dev;
+# they must not manage the same Azure resource from multiple Terraform states.
+data "azapi_resource" "jfrog_registry_acct" {
+  count       = var.manage_account_scoped_connection ? 0 : 1
+  type        = "Microsoft.CognitiveServices/accounts/connections@2025-06-01"
+  resource_id = "${local.account_id}/connections/${var.connection_name}-acct"
+
+  response_export_values = ["properties.target", "properties.metadata", "properties.isSharedToAll"]
 }

@@ -1,16 +1,16 @@
 output "registry_connection_id" {
-  description = "Full resource ID of the active JFrog registry connection (account-scoped, shared to all projects)."
-  value       = azapi_resource.jfrog_registry_acct.id
+  description = "Full resource ID of the account-scoped shared JFrog registry connection."
+  value       = var.manage_account_scoped_connection ? azapi_resource.jfrog_registry_acct[0].id : data.azapi_resource.jfrog_registry_acct[0].id
 }
 
 output "registry_connection_name" {
-  description = "Active connection name for hosted-agent deployments."
-  value       = azapi_resource.jfrog_registry_acct.name
+  description = "Name of the account-scoped shared JFrog registry connection."
+  value       = var.manage_account_scoped_connection ? azapi_resource.jfrog_registry_acct[0].name : data.azapi_resource.jfrog_registry_acct[0].name
 }
 
 output "registry_target" {
   description = "Registry origin approved for hosted-agent image pulls."
-  value       = azapi_resource.jfrog_registry_acct.output.properties.target
+  value       = var.manage_account_scoped_connection ? azapi_resource.jfrog_registry_acct[0].output.properties.target : data.azapi_resource.jfrog_registry_acct[0].output.properties.target
 }
 
 output "project_registry_connection_id" {
@@ -20,7 +20,7 @@ output "project_registry_connection_id" {
 
 output "legacy_registry_connection_id" {
   description = "Previous connection retained temporarily for rollback."
-  value       = azapi_resource.legacy_registry.id
+  value       = var.manage_legacy_connection ? azapi_resource.legacy_registry[0].id : null
 }
 
 output "project_id" {
@@ -46,9 +46,9 @@ output "platform_contract" {
     foundry_project_resource_id     = data.azapi_resource.project.id
     foundry_project_endpoint        = "https://${var.foundry_account_name}.services.ai.azure.com/api/projects/${var.foundry_project_name}"
     foundry_project_principal_id    = data.azapi_resource.project.output.identity.principalId
-    registry_connection_name        = azapi_resource.jfrog_registry_acct.name
-    registry_connection_resource_id = azapi_resource.jfrog_registry_acct.id
-    registry_target                 = azapi_resource.jfrog_registry_acct.output.properties.target
+    registry_connection_name        = azapi_resource.jfrog_registry.name
+    registry_connection_resource_id = azapi_resource.jfrog_registry.id
+    registry_target                 = azapi_resource.jfrog_registry.output.properties.target
     registry_token_audience         = var.token_audience
     registry_token_endpoint         = var.token_endpoint
     registry_oidc_provider_name     = var.oidc_provider_name

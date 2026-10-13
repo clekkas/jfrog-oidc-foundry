@@ -44,5 +44,5 @@ variable "admin_username" {
 variable "runners" {
   description = "One runner VM per consuming repository. \"foundation\" keeps the original resource names."
   type        = set(string)
-  default     = ["foundation", "agent"]
+  default     = ["foundation", "agent", "mykp"]
 }
