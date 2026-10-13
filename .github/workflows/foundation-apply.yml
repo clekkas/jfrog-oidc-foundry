@@ -2,7 +2,7 @@ name: foundation-apply
 
 # Protected apply of the foundation infrastructure, then publication of the platform contract.
 #   push to main      -> dev
-#   workflow_dispatch -> dev, prod or mykp (main only)
+#   workflow_dispatch -> dev or prod (main only)
 # Only this workflow can use the apply identity: its federated credential is bound to the
 # foundation-<env> GitHub Environment, which carries the required reviewers.
 
@@ -19,7 +19,7 @@ on:
       environment:
         description: Foundation environment to apply
         type: choice
-        options: [dev, prod, mykp]
+        options: [dev, prod]
         default: dev
 
 permissions:
