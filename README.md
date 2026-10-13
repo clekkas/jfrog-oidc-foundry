@@ -104,6 +104,48 @@ both repositories and requires authenticated `az`, `gh`, and `git` commands. If 
 after the connection is broken, preserve the checkpoint and run `-Phase Fix`; do not start a
 second `Break` phase.
 
+### How and when the platform contract is exposed
+
+The platform contract is the official, decoupled API surface between this foundation repo and all agent application repositories.
+
+#### When it is exposed
+- **Automatically on every `foundation-apply` run:** Whether triggered by a merge to `main` (dev environment) or via manual `workflow_dispatch` (dev/prod), the `contract` job runs as the final step. Even runs with zero infrastructure changes validate and re-publish the contract.
+- **Locally before changes merge:** Platform engineers can preview the contract locally at any time:
+  ```bash
+  terraform -chdir=infra/registry-connection output -json platform_contract | bash scripts/build-contract.sh dev contract-out
+  ```
+
+#### How it is exposed
+1. **GitHub Actions Workflow Summary:** The `contract` job formats the contract into a Markdown summary table with the SHA-256 digest on the workflow run overview.
+2. **Workflow Artifact (`platform-contract-<env>`):** Uploaded as `foundry-<env>.json` with a 90-day retention window.
+3. **Artifact Shape:**
+   ```json
+   {
+     "contractVersion": "1",
+     "environment": "dev",
+     "source": { "repository": "clekkas/jfrog-oidc-foundry", "commit": "...", "workflowRun": "..." },
+     "valuesSha256": "...",
+     "values": {
+       "AZURE_TENANT_ID": "...",
+       "AZURE_SUBSCRIPTION_ID": "...",
+       "AZURE_RESOURCE_GROUP": "...",
+       "FOUNDRY_ACCOUNT_NAME": "...",
+       "FOUNDRY_PROJECT_NAME": "...",
+       "FOUNDRY_PROJECT_RESOURCE_ID": "...",
+       "FOUNDRY_PROJECT_ENDPOINT": "...",
+       "FOUNDRY_PROJECT_PRINCIPAL_ID": "...",
+       "JFROG_REGISTRY_CONNECTION_NAME": "jfrog-registry-acct",
+       "JFROG_REGISTRY_CONNECTION_ID": "/subscriptions/.../connections/jfrog-registry-acct",
+       "JF_URL": "https://trialndswdc.jfrog.io",
+       "JFROG_REPO": "byor-demo-docker",
+       "JFROG_GITHUB_OIDC_PROVIDER": "github-oidc",
+       "REGISTRY_TOKEN_AUDIENCE": "69500e76-a944-435f-9d97-28822dc29c43",
+       "REGISTRY_TOKEN_ENDPOINT": "/access/api/v1/oidc/token",
+       "REGISTRY_OIDC_PROVIDER_NAME": "oidc-byor"
+     }
+   }
+   ```
+
 ### Platform contract publication
 
 After every successful `foundation-apply` run, including runs with no changes, the `contract`
@@ -126,7 +168,7 @@ jq -S -c .values foundry-dev.json | sha256sum
 | `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `AZURE_RESOURCE_GROUP` | Where the Foundry project lives |
 | `FOUNDRY_ACCOUNT_NAME`, `FOUNDRY_PROJECT_NAME`, `FOUNDRY_PROJECT_RESOURCE_ID`, `FOUNDRY_PROJECT_ENDPOINT` | The Foundry project to release agents into |
 | `FOUNDRY_PROJECT_PRINCIPAL_ID` | Project managed identity (the identity that pulls images from JFrog) |
-| `JFROG_REGISTRY_CONNECTION_NAME`, `JFROG_REGISTRY_CONNECTION_ID` | The project connection that hosted agents reference |
+| `JFROG_REGISTRY_CONNECTION_NAME`, `JFROG_REGISTRY_CONNECTION_ID` | The registry connection that hosted agents reference (account-scoped `jfrog-registry-acct`, shared to all projects) |
 | `JF_URL` | JFrog base URL (no trailing slash) |
 | `JFROG_REPO` | Docker repository key used in image paths (`<JF_URL host>/<JFROG_REPO>/<image>`). Required: `jfrog_repository_key` has no default, and the contract build fails without it |
 | `JFROG_GITHUB_OIDC_PROVIDER` | JFrog OIDC provider name app repos use to push from GitHub Actions |
@@ -147,14 +189,23 @@ Process:
 2. The platform owner opens the run's summary or downloads the `platform-contract-<env>` artifact
    and confirms the values (and `valuesSha256`).
 3. A platform or app admin sets each key in `values` as a variable on the app repo's matching
-   protected environment, for example:
+   protected environment. You can use the GitHub CLI or the automated helper:
 
    ```bash
+   # Using jq + gh CLI
    jq -r '.values | to_entries[] | [.key, .value] | @tsv' foundry-dev.json |
    while IFS=$'\t' read -r k v; do
      gh variable set "$k" --repo contoso/my-agent --env dev --body "$v"
    done
    ```
+
+   Or via the agent repo's helper script:
+   ```powershell
+   ./scripts/import-platform-contract.ps1 -ContractPath foundry-dev.json -Repo contoso/my-agent -Environment agent
+   ```
+
+   Or in VS Code with GitHub Copilot in the agent repo:
+   Run the prompt action `/apply-platform-contract`.
 
 4. App workflows read them as `${{ vars.FOUNDRY_PROJECT_ENDPOINT }}`, `${{ vars.JF_URL }}`, etc.
 
