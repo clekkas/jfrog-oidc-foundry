@@ -97,3 +97,28 @@ resource "azapi_resource" "jfrog_registry" {
     prevent_destroy = true
   }
 }
+
+# POC: account-scoped registry connection, shared to all projects.
+resource "azapi_resource" "jfrog_registry_acct" {
+  type      = "Microsoft.CognitiveServices/accounts/connections@2025-06-01"
+  name      = "${var.connection_name}-acct" # -> jfrog-registry-acct
+  parent_id = local.account_id
+
+  body = {
+    properties = {
+      category      = "CustomKeys"
+      authType      = "CustomKeys"
+      target        = var.registry_target
+      isSharedToAll = true
+      credentials = {
+        keys = local.registry_keys
+      }
+      metadata = {
+        type = "registry_connection"
+        mode = "oauth_token_exchange"
+      }
+    }
+  }
+
+  response_export_values = ["properties.target", "properties.metadata", "properties.isSharedToAll"]
+}

@@ -18,6 +18,11 @@ output "legacy_registry_connection_id" {
   value       = azapi_resource.legacy_registry.id
 }
 
+output "account_registry_connection_id" {
+  description = "Resource ID of the account-scoped shared registry connection."
+  value       = azapi_resource.jfrog_registry_acct.id
+}
+
 output "project_id" {
   description = "Foundry project resource ID."
   value       = data.azapi_resource.project.id
