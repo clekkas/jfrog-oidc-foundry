@@ -22,5 +22,5 @@ jfrog_repository_key = "byor-demo-docker"
 
 # Both connections already exist in Foundry. Keeping these imports enabled makes
 # an empty or incomplete state adopt them instead of planning duplicate creates.
-import_existing_connection        = true
+import_existing_connection       = true
 import_existing_jfrog_connection = true

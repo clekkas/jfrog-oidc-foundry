@@ -3,8 +3,8 @@
   Provision the self-hosted GitHub Actions runners (infra/ci-runner, AzAPI) and register
   one of them with a repository. Re-runnable.
 
-  infra/ci-runner creates two isolated runner VMs: 'foundation' (this repo) and 'agent' (the
-  agent repo). -RunnerKey selects which one is registered to -Repo.
+    infra/ci-runner creates isolated runner VMs for 'foundation', 'agent', and 'mykp'.
+    -RunnerKey selects which one is registered to -Repo.
 
   The state storage account has public network access disabled, so every workflow that touches
   Terraform state runs on a runner. Each lives in a VNet with a private endpoint to the state
@@ -18,6 +18,9 @@
 .EXAMPLE
   # Runner for the agent repo (second VM, registered to that repo only)
   ./scripts/setup-runner.ps1 -Repo contoso/agent-repo -EnvName dev -RunnerKey agent
+
+    # Runner for the mykp agent repo (third VM, registered to that repo only)
+    ./scripts/setup-runner.ps1 -Repo clekkas/jfrog-agent-mykp -EnvName mykp -RunnerKey mykp
 #>
 [CmdletBinding()]
 param(
@@ -25,8 +28,8 @@ param(
     # Environment whose tfvars/backend files locate the subscription and state account.
     [Parameter(Mandatory)][string]$EnvName,
     [string]$RunnerLabel = 'byor-private',
-    # Which VM of infra/ci-runner registers to -Repo: 'foundation' (this repo) or 'agent' (the agent repo).
-    [ValidateSet('foundation', 'agent')][string]$RunnerKey = 'foundation',
+    # Which VM of infra/ci-runner registers to -Repo.
+    [ValidateSet('foundation', 'agent', 'mykp')][string]$RunnerKey = 'foundation',
     [string]$VmSize = 'Standard_B2s_v2',
     # Defaults to the state resource group's region. The private endpoint can reach the state account across regions.
     [string]$Location,

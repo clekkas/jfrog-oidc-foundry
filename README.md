@@ -54,10 +54,10 @@ contracts/
 infra/
   registry-connection/         Foundation Terraform (azapi): JFrog connection + platform_contract output
     environments/              <env>.tfvars (committed, non-secret) and <env>.backend.hcl
-  ci-runner/                   Bootstrap layer: VNet, state private endpoint, two runner VMs (foundation, agent; local state)
+  ci-runner/                   Bootstrap layer: VNet, state private endpoint, three runner VMs (foundation, agent, mykp; local state)
 scripts/
   bootstrap-github-oidc.ps1    Identities, federated credentials, state container, RBAC, GitHub environments
-  setup-runner.ps1             Provision the runner VMs and register one (-RunnerKey foundation|agent); backs up local state
+  setup-runner.ps1             Provision the runner VMs and register one (-RunnerKey foundation|agent|mykp); backs up local state
   migrate-state.ps1            One-time, verified copy of foundation state to the new container
   demo-registry-connection.ps1 Two-phase failure/recovery demo for the registry connection and hosted-agent deployment
   build-contract.sh            Validate the Terraform output and build the contract JSON + summary
@@ -74,7 +74,7 @@ account has public network access disabled. Authentication is GitHub OIDC to Ent
 | Workflow | Trigger | Identity | Notes |
 | --- | --- | --- | --- |
 | `foundation-plan` | Pull request touching foundation paths | `foundation-<env>-plan` (read-only) | `terraform fmt -check`, `validate`, `plan` for every environment with an `environments/<env>.tfvars`. Runs with `-lock=false`. |
-| `foundation-apply` | Push to `main` (applies `dev`); manual dispatch for `dev` or `prod` (main only) | plan job and contract job: `-plan` identity. apply job: `foundation-<env>` (write) | Saves the plan, waits for the environment's required reviewers, applies **that exact plan**. A stale plan fails and must be re-run. |
+| `foundation-apply` | Push to `main` (applies `dev`); manual dispatch for `dev`, `prod`, or `mykp` (main only) | plan job and contract job: `-plan` identity. apply job: `foundation-<env>` (write) | Saves the plan, waits for the environment's required reviewers, applies **that exact plan**. A stale plan fails and must be re-run. |
 | `foundation-drift` | Daily 05:23 UTC and manual | `foundation-<env>-plan` | `plan -detailed-exitcode`. Exit 2 opens or updates a `foundation-drift` issue and fails the run. A clean plan closes it. |
 
 ### Registry connection failure/recovery demo
@@ -278,6 +278,8 @@ top; the bootstrap script enforces it).
 ./scripts/setup-runner.ps1 -Repo contoso/foundry-platform -EnvName dev
 #    Second, isolated runner VM for the agent repo (same label, registered to that repo only):
 ./scripts/setup-runner.ps1 -Repo contoso/agent-repo -EnvName dev -RunnerKey agent
+#    Third, dedicated runner VM for the mykp agent repo:
+./scripts/setup-runner.ps1 -Repo clekkas/jfrog-agent-mykp -EnvName mykp -RunnerKey mykp
 
 # 4. Only if state already exists in the old location: verified copy (see "Migrating existing state").
 ./scripts/migrate-state.ps1 -EnvName dev
@@ -308,6 +310,23 @@ cannot be established:
    workflows pick it up automatically.
 3. Add a prod JFrog Entra integration and repository as in the prerequisites above.
 4. Repeat the PRE-CUTOVER checklist for `prod`.
+
+### mykp project contract
+
+The `mykp` environment targets the existing `mysecond-project-for-kp` project in the
+`kaiser-foundry-resource` account. Its committed tfvars import the project's existing
+`jfrog-registry` connection, read the account-scoped shared connection owned by `dev`, and do
+not manage the legacy project connection. It uses a separate foundation state key:
+`registry-connection/mykp.tfstate`.
+
+Before applying, run `bootstrap-github-oidc.ps1 -EnvName mykp -StateStorageAccount
+tfstateb173d2d85c34 -Reviewers <approved-reviewer>` to create the `foundation-mykp` and
+`foundation-mykp-plan` identities/environments and their state RBAC. Confirm the target
+project's JFrog identity mapping includes its managed identity. Then, from `main`, manually
+dispatch `foundation-apply` with `environment: mykp`. After reviewer approval and a successful
+apply, the workflow publishes `platform-contract-mykp` with `foundry-mykp.json`; review the
+workflow summary and `valuesSha256` before copying its values into the app repo's protected
+`agent` environment.
 
 ### Migrating existing state
 
@@ -367,7 +386,8 @@ store its own state in that backend. It keeps **local** state in
 - **Recovery** if the file is lost: copy the newest backup to `infra/ci-runner/terraform.tfstate`
   and run `terraform plan`. With no backup, import each resource by its Azure resource ID
   (`terraform import '<address>' <id>`; addresses are in `main.tf`, the VMs are `byor-ci-runner-01`
-  for the foundation repo and `byor-ci-agent-runner-01` for the agent repo) until the plan is clean.
+  for the foundation repo, `byor-ci-agent-runner-01` for the byor agent repo, and
+  `byor-ci-mykp-runner-01` for the mykp agent repo) until the plan is clean.
 - **Azure CLI on the runners:** `cloud-init.yaml` installs `az` on newly created VMs. The agent VM was
   created before that line existed, so `az` was installed on it by hand with `az vm run-command`.
   `azure/login` fails with `Unable to locate executable file: az` on a runner without it. The VM
