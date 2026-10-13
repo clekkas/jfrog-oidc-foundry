@@ -272,9 +272,10 @@ Created and owned by a JFrog administrator, outside Terraform:
 
 1. **Entra integration for the Foundry project identity** (the connection's `oidc-byor`
    provider): issuer `https://login.microsoftonline.com/<tenant-id>/v2.0`, audience equal to
-   `registry_token_audience` in the tfvars, with an identity mapping for the project managed
-   identity (`FOUNDRY_PROJECT_PRINCIPAL_ID`) to a user/group that has **read** permission on the
-   Docker repository. Its name must match `registry_oidc_provider_name`.
+   `registry_token_audience` in the tfvars, with an identity mapping on the claims `aud` and
+   `tid` only (no `oid`) to a user/group that has **read** permission on the Docker repository.
+   Its name must match `registry_oidc_provider_name`. Because JFrog no longer pins a project
+   identity, access is controlled in Entra (see "Onboarding a new Foundry project").
 2. **GitHub OIDC provider** (`github-oidc` by default, `jfrog_github_oidc_provider_name`) with
    issuer `https://token.actions.githubusercontent.com`, and per-app-repo identity mappings
    scoped to the app repo and its protected environment, with **deploy/write** permission on
@@ -290,6 +291,24 @@ Created and owned by a JFrog administrator, outside Terraform:
 
 This repo only manages the Foundry side (the project connection and the contract). It never
 stores JFrog credentials.
+
+### Onboarding a new Foundry project
+
+The shared connection `jfrog-registry-acct` is visible to every project in the account, but a
+project can only pull once its managed identity may get a token for the registry audience app
+(`Foundry-Registry-Agent`). That service principal has **Assignment required = Yes**, so each
+project identity must be assigned to it in Entra before its first deploy. No JFrog change is needed.
+
+```bash
+SP=$(az ad sp show --id <registry_token_audience> --query id -o tsv)
+PID=$(az resource show --ids <project-resource-id> --api-version 2025-06-01 --query identity.principalId -o tsv)
+az rest --method post --uri "https://graph.microsoft.com/v1.0/servicePrincipals/$SP/appRoleAssignedTo" \
+  --headers Content-Type=application/json \
+  --body "{\"principalId\":\"$PID\",\"resourceId\":\"$SP\",\"appRoleId\":\"00000000-0000-0000-0000-000000000000\"}"
+```
+
+An unassigned project fails the deploy with `mi_not_authorized`. A first attempt right after
+assigning can fail the same way; retry after a few minutes before investigating.
 
 ## OIDC setup
 
