@@ -121,4 +121,8 @@ resource "azapi_resource" "jfrog_registry_acct" {
   }
 
   response_export_values = ["properties.target", "properties.metadata", "properties.isSharedToAll"]
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
