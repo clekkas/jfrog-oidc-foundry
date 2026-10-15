@@ -199,9 +199,15 @@ Process:
    done
    ```
 
-   Or via the agent repo's helper script:
+   For `jfrog-agent-mykp`, use its guarded importer only with a published contract for
+   its already initialized project. The current dev contract targets `workshop-demo-project`;
+   it is not valid for mykp's `mysecond-project-for-kp`, and this foundation does not currently
+   publish a matching mykp contract. Do not bulk-copy the dev values into that repo or edit and
+   re-hash the artifact. Its independent bootstrap remains the initial setup path.
+
    ```powershell
-   ./scripts/import-platform-contract.ps1 -ContractPath foundry-dev.json -Repo contoso/my-agent -Environment agent
+   # Example only: obtain an approved matching-project artifact first.
+   ./scripts/import-platform-contract.ps1 -ContractPath foundry-mykp.json -Repo clekkas/jfrog-agent-mykp -Environment agent
    ```
 
    Or in VS Code with GitHub Copilot in the agent repo:
