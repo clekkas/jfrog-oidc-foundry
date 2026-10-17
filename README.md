@@ -544,7 +544,7 @@ Expected subjects: `repo:<repo>:environment:foundation-dev` and
 immutable subjects). Both credential counts `0` (no client secrets).
 
 ```bash
-SA=$(az storage account show -n tfstateb173d2d85c34 -g kaiser-foundry-rg --query id -o tsv)
+SA=$(az storage account show -n tfstateb173d2d85c34 -g <foundry-resource-group> --query id -o tsv)
 az role assignment list --scope "$SA/blobServices/default/containers/foundation-tfstate" \
   --query "[].{who:principalName,role:roleDefinitionName,scope:scope}" -o table
 az role assignment list --scope "$SA" \
