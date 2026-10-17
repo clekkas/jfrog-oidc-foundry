@@ -1,21 +1,27 @@
-# Foundry platform (foundation) repository
+# jfrog-oidc-foundry — Foundry BYOR platform foundation 🏛️
 
-This repository owns the **stable foundation** for BYOR hosted agents on Microsoft Foundry:
-the connection from a Foundry project to the private JFrog registry, the runner that can reach
-the Terraform state, and the identities that deploy them. It publishes a **platform contract**
-that application repositories consume.
+**The stable foundation for bring-your-own-registry (BYOR) hosted agents on Microsoft Foundry**: the Foundry-to-JFrog registry connection, the private-network CI runners, the Terraform state, and the deployment identities — published to application repos as a versioned, non-secret **platform contract**.
 
-It does **not** contain application code, a Dockerfile, knowledge files, hosted-agent Terraform,
-or agent smoke tests, and it never deploys a hosted-agent version.
+[![Plan](https://github.com/clekkas/jfrog-oidc-foundry/actions/workflows/foundation-plan.yml/badge.svg)](https://github.com/clekkas/jfrog-oidc-foundry/actions/workflows/foundation-plan.yml)
+[![Apply](https://github.com/clekkas/jfrog-oidc-foundry/actions/workflows/foundation-apply.yml/badge.svg)](https://github.com/clekkas/jfrog-oidc-foundry/actions/workflows/foundation-apply.yml)
+[![Drift](https://github.com/clekkas/jfrog-oidc-foundry/actions/workflows/foundation-drift.yml/badge.svg)](https://github.com/clekkas/jfrog-oidc-foundry/actions/workflows/foundation-drift.yml)
 
-> **This repository MUST be private or internal. Never make it public.**
-> Pull request workflows run on a **self-hosted runner** that has a private network path to the
-> Terraform state storage account and holds a read-only Azure identity. On a public repo,
-> anyone could open a PR and run arbitrary code on that machine. `bootstrap-github-oidc.ps1`
-> refuses to run against a public repository, and the plan workflow skips fork PRs, but neither
-> replaces keeping the repo non-public. Limit write access to trusted platform engineers.
+It does **not** contain application code, a Dockerfile, knowledge files, hosted-agent Terraform, or agent smoke tests, and it never deploys a hosted-agent version — that's owned by the app repos below.
 
-## Ownership boundaries
+> ## ⚠️ This Repository MUST Be Private or Internal — Never Public
+>
+> Pull request workflows run on a **self-hosted runner** that has a private network path to the Terraform state storage account and holds a read-only Azure identity. On a public repo, anyone could open a PR and run arbitrary code on that machine. `bootstrap-github-oidc.ps1` refuses to run against a public repository, and the plan workflow skips fork PRs, but neither replaces keeping the repo non-public. **Limit write access to trusted platform engineers.**
+
+## 🎯 What This Foundation Provides
+
+- **Foundry ↔ JFrog registry connection** — the `azapi_resource` that lets Foundry exchange its project identity's token for a short-lived JFrog pull token (OIDC token exchange, no stored secrets)
+- **A versioned, non-secret platform contract** — published as a GitHub Actions artifact after every apply; app repos consume it instead of reading this repo's Terraform state
+- **Private self-hosted CI runners** — the only network path to a state storage account that tenant policy forces private-only
+- **Dual-identity OIDC security model** — read-only `plan` identity for PRs, write `apply` identity gated behind required-reviewer approval, zero client secrets anywhere
+- **Drift detection** — a scheduled workflow that opens/closes a GitHub issue if live Azure state diverges from Terraform
+- **A built-in break/fix demo** — intentionally breaks and restores the registry connection to show the failure mode live
+
+## 🧭 Ownership Boundaries
 
 | Concern | Owner |
 | --- | --- |
@@ -39,7 +45,7 @@ apply (main, approval) write identity
                                                   build image -> push to JFrog -> release hosted agent -> smoke test
 ```
 
-## Repository layout
+## 📁 Repository Layout
 
 ```
 .github/
@@ -64,7 +70,7 @@ scripts/
   _common.ps1                  Shared helpers
 ```
 
-## Workflows
+## 🔁 Workflows
 
 All workflows run on the self-hosted runner (label `byor-private`) because the state storage
 account has public network access disabled. Authentication is GitHub OIDC to Entra: there are
@@ -77,7 +83,7 @@ account has public network access disabled. Authentication is GitHub OIDC to Ent
 | `foundation-apply` | Push to `main` (applies `dev`); manual dispatch for `dev` or `prod` (main only) | plan job and contract job: `-plan` identity. apply job: `foundation-<env>` (write) | Saves the plan, waits for the environment's required reviewers, applies **that exact plan**. A stale plan fails and must be re-run. |
 | `foundation-drift` | Daily 05:23 UTC and manual | `foundation-<env>-plan` | `plan -detailed-exitcode`. Exit 2 opens or updates a `foundation-drift` issue and fails the run. A clean plan closes it. |
 
-### Registry connection failure/recovery demo
+### 🎭 Registry Connection Failure/Recovery Demo
 
 The demo orchestrator intentionally breaks the dev Foundry-to-JFrog OIDC connection, proves the
 failure with a new hosted-agent image/version, pauses for presenter approval, then restores the
@@ -104,7 +110,7 @@ both repositories and requires authenticated `az`, `gh`, and `git` commands. If 
 after the connection is broken, preserve the checkpoint and run `-Phase Fix`; do not start a
 second `Break` phase.
 
-### How and when the platform contract is exposed
+### 📜 How and When the Platform Contract Is Exposed
 
 The platform contract is the official, decoupled API surface between this foundation repo and all agent application repositories.
 
@@ -176,7 +182,7 @@ jq -S -c .values foundry-dev.json | sha256sum
 
 The contract contains identifiers and endpoints only. It contains no secrets and must stay that way.
 
-## How app repos consume the contract
+## 🔌 How App Repos Consume the Contract
 
 App repos take **approved** values from the contract and store them as **GitHub Environment
 variables on a protected environment** in the app repo (for example `dev` and `prod`, with
@@ -225,7 +231,7 @@ part of the contract.
 Contract changes are compatible within `contractVersion` `"1"`: variables may be added, never
 renamed or removed. Breaking changes bump the version and are announced to app repo owners.
 
-## App repos must not read foundation Terraform state
+## 🔒 App Repos Must Not Read Foundation Terraform State
 
 Foundation state is not an interface. It is stored in a dedicated container
 (`foundation-tfstate`) and contains the full resource definitions, IDs and any values the
@@ -243,7 +249,7 @@ Enforcement, not just convention:
 - App workflows must never use `terraform_remote_state` or `data "terraform_remote_state"`
   against this state. Use the contract values instead.
 
-## Required Azure RBAC
+## 🔑 Required Azure RBAC
 
 Assignments made by `bootstrap-github-oidc.ps1` (names of the identities are
 `github-foundry-platform-<env>-apply` and `...-plan`):
@@ -272,7 +278,7 @@ Also needed, granted once by someone with sufficient rights:
   it could alter the registry connection this repo manages. Prefer a narrower custom role if
   your policy cannot accept that, and rely on drift detection to catch it.
 
-## JFrog prerequisites
+## 🧰 JFrog Prerequisites
 
 Created and owned by a JFrog administrator, outside Terraform:
 
@@ -298,7 +304,7 @@ Created and owned by a JFrog administrator, outside Terraform:
 This repo only manages the Foundry side (the project connection and the contract). It never
 stores JFrog credentials.
 
-### Onboarding a new Foundry project
+### 🆕 Onboarding a New Foundry Project
 
 The shared connection `jfrog-registry-acct` is visible to every project in the account, but a
 project can only pull once its managed identity may get a token for the registry audience app
@@ -316,7 +322,7 @@ az rest --method post --uri "https://graph.microsoft.com/v1.0/servicePrincipals/
 An unassigned project fails the deploy with `mi_not_authorized`. A first attempt right after
 assigning can fail the same way; retry after a few minutes before investigating.
 
-## OIDC setup
+## 🔐 OIDC Setup
 
 Two Entra applications per environment, each with a single federated credential bound to a
 **GitHub Environment** rather than a branch:
@@ -335,7 +341,7 @@ Each environment holds the variables `AZURE_CLIENT_ID`, `AZURE_TENANT_ID` and
 `AZURE_SUBSCRIPTION_ID` (identifiers, not secrets). Repository variables: `TERRAFORM_VERSION`
 and `RUNNER_LABEL`.
 
-### First-time setup
+### 🚀 First-Time Setup
 
 Prerequisites: Azure CLI (logged in), GitHub CLI (authenticated with admin on the repo),
 Terraform, PowerShell 7. The repository must be **private or internal** (see the warning at the
@@ -377,7 +383,7 @@ cannot be established:
   is limited to the `main` deployment branch; the script reads the environment back and fails if
   either is missing. Required reviewers need a GitHub plan that supports them on this repo. `-NoRequiredReviewers` is an explicit, temporary opt-out: only the `main` restriction remains, so a push to `main` that changes `infra/registry-connection/**` applies with no human gate. Re-run with `-Reviewers` to restore it.
 
-### Adding an environment (for example prod)
+### ➕ Adding an Environment (for Example prod)
 
 1. Copy `environments/prod.tfvars.example` to `prod.tfvars` and `prod.backend.hcl.example` to
    `prod.backend.hcl`, then fill them in (use a separate state key, ideally a separate
@@ -387,7 +393,7 @@ cannot be established:
 3. Add a prod JFrog Entra integration and repository as in the prerequisites above.
 4. Repeat the PRE-CUTOVER checklist for `prod`.
 
-### Migrating existing state
+### 🔄 Migrating Existing State
 
 If the foundation was previously applied from the single-repo setup, its state is in the old
 location, and a plan here would see empty state and try to create everything. For dev:
@@ -422,7 +428,7 @@ Freeze the old pipeline **before** copying so nothing writes the source state mi
 after cutover (two writers means split state). Then verify with `state list` and `plan` as in the
 checklist. Delete the old blob only after the new pipeline has been stable for a while.
 
-## infra/ci-runner local state
+## 💾 infra/ci-runner Local State
 
 `infra/ci-runner` provisions the runner that makes the remote state reachable, so it cannot
 store its own state in that backend. It keeps **local** state in
@@ -454,7 +460,7 @@ store its own state in that backend. It keeps **local** state in
 - Losing it does **not** lose foundation state (that lives in the storage account), but a missing
   or broken runner blocks every workflow.
 
-## Workflow security model
+## 🛡️ Workflow Security Model
 
 - **PR code never gets write credentials.** `foundation-plan` runs PR code, but only with the
   `foundation-<env>-plan` identity (Reader + state Reader). The apply identity's federated
@@ -471,7 +477,7 @@ store its own state in that backend. It keeps **local** state in
   `infra/**`, for example via CODEOWNERS), and, as a follow-up, using an ephemeral runner or a
   separate runner label for apply.
 
-## PRE-CUTOVER checklist
+## ✅ Pre-Cutover Checklist
 
 Complete every step, in order, before the first apply. Replace `<repo>` with this repository's
 `<owner>/<repo>`. Run from the repo root. **Stop at the first unexpected result.** Steps 4 to 6
@@ -640,7 +646,7 @@ re-enable the old workflow after that without migrating state back. Next: copy t
 contract values into the app repos' protected environments (see "How app repos consume the
 contract").
 
-## Local development
+## 🧪 Local Development
 
 ```bash
 cd infra/registry-connection
@@ -652,7 +658,7 @@ terraform output -json platform_contract | ../../scripts/build-contract.sh dev .
 Requires `Storage Blob Data Contributor` on the state container and network access to it
 (the runner, or a VPN into the VNet). `build-contract.sh` needs `jq`.
 
-## Safety notes
+## ⚠️ Safety Notes
 
 - `prevent_destroy` is set on both registry connections, and on the runner VM, VNet and state private endpoint.
 - Apply never runs from a pull request, and only from `main`.
@@ -660,3 +666,36 @@ Requires `Storage Blob Data Contributor` on the state container and network acce
   sensitive values and are kept as short-lived artifacts only.
 - The drift workflow reports drift but does not fix it. Fix by reverting the out-of-band
   change or by a reviewed PR.
+
+## 🛠️ Commands Reference
+
+| Command | Description |
+|---|---|
+| `./scripts/bootstrap-github-oidc.ps1 -Repo <repo> -EnvName dev -Reviewers <reviewers>` | One-time: identities, OIDC federation, state container, RBAC, GitHub environments |
+| `./scripts/setup-runner.ps1 -Repo <repo> -EnvName dev` | Provision and register a private CI runner VM |
+| `./scripts/migrate-state.ps1 -EnvName dev` | Verified, checksum-confirmed copy of state to the new container layout |
+| `./scripts/demo-registry-connection.ps1 -Phase Break` | Break/recovery demo — intentionally break the JFrog connection |
+| `./scripts/demo-registry-connection.ps1 -Phase Fix` | Break/recovery demo — restore and redeploy the failed image |
+| `terraform -chdir=infra/registry-connection plan -var-file=environments/dev.tfvars` | Preview the registry connection and runner changes |
+| `terraform output -json platform_contract \| bash scripts/build-contract.sh dev contract-out` | Preview the published platform contract locally |
+| `gh workflow run foundation-apply.yml --repo <repo> -f environment=dev` | Manually trigger a foundation apply |
+| `gh workflow run foundation-drift.yml --repo <repo>` | Manually trigger a drift-detection run |
+
+## 📚 Related Repositories
+
+This foundation publishes the platform contract consumed by the following application repos:
+
+| Repo | Registry | Pull Mechanism |
+|---|---|---|
+| [`byor-agent`](https://github.com/clekkas/byor-agent) | Private JFrog Artifactory | OIDC token exchange via the connection this repo owns |
+| [`jfrog-agent-mykp`](https://github.com/clekkas/jfrog-agent-mykp) | Private JFrog Artifactory (second Foundry project) | OIDC token exchange via the shared account-scoped connection |
+| [`byor-agent-dockerhub`](https://github.com/clekkas/byor-agent-dockerhub) | Public Docker Hub | Anonymous pull — no connection, no OIDC (proof-of-concept) |
+| [`byor-agent-docker`](https://github.com/clekkas/byor-agent-docker) | Self-hosted `registry:2` | Anonymous pull — no connection, no OIDC (proof-of-concept) |
+
+## 🤝 Contributing
+
+This is a platform foundation repo for a specific workshop engagement. Keep write access scoped to trusted platform engineers — see the **Workflow Security Model** section above before making changes.
+
+## 📄 License
+
+Internal proof-of-concept — no license file; not intended for redistribution outside this engagement.
